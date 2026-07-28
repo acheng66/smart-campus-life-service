@@ -1,6 +1,11 @@
 package com.smartcampus.service.impl;
 
 import java.util.Collections;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.function.Function;
+import java.util.stream.Collectors;
 
 import javax.annotation.Resource;
 
@@ -11,16 +16,24 @@ import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.context.annotation.Lazy;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.script.DefaultRedisScript;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import com.baomidou.mybatisplus.core.toolkit.IdWorker;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.smartcampus.config.RabbitMQConfig;
+import com.smartcampus.dto.MyVoucherDTO;
 import com.smartcampus.dto.Result;
+import com.smartcampus.entity.SeckillVoucher;
+import com.smartcampus.entity.Shop;
+import com.smartcampus.entity.Voucher;
 import com.smartcampus.entity.VoucherOrder;
+import com.smartcampus.mapper.ShopMapper;
 import com.smartcampus.mapper.VoucherOrderMapper;
 import com.smartcampus.service.ISeckillVoucherService;
 import com.smartcampus.service.IVoucherOrderService;
+import com.smartcampus.service.IVoucherService;
 import com.smartcampus.utils.RedisIdWorker;
 import com.smartcampus.utils.UserHolder;
 
@@ -39,6 +52,8 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
     @Resource
     private ISeckillVoucherService seckillVoucherService;
     @Resource
+    private IVoucherService voucherService;
+    @Resource
     private RedisIdWorker redisIdWorker;
     @Resource
     private StringRedisTemplate stringRedisTemplate;
@@ -49,6 +64,8 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
     private IVoucherOrderService proxy;
     @Resource
     private RabbitTemplate rabbitTemplate;
+    @Resource
+    private ShopMapper shopMapper;
 
     private static final DefaultRedisScript<Long> SECKILL_SCRIPT;
     static {
@@ -154,6 +171,109 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
         return Result.ok(orderId);
 
     }
+
+    /**
+     * 领取普通券。
+     *
+     * <p>普通券没有秒杀库存，因此不使用 Redis/Lua；领取关系直接落到数据库。
+     * 数据库唯一索引 {@code uk_user_voucher(user_id, voucher_id)} 是并发下的最终兜底，
+     * 即使两个请求同时通过预检，也只能成功创建一条记录。</p>
+     */
+    @Override
+    @Transactional
+    public Result receiveVoucher(Long voucherId) {
+        Long userId = UserHolder.getUser().getId();
+        Voucher voucher = voucherService.getById(voucherId);
+        if (voucher == null) {
+            return Result.fail("优惠券不存在");
+        }
+        if (!Integer.valueOf(0).equals(voucher.getType())) {
+            return Result.fail("该优惠券为秒杀券，请使用秒杀领取接口");
+        }
+        if (!Integer.valueOf(1).equals(voucher.getStatus())) {
+            return Result.fail("优惠券当前不可领取");
+        }
+        boolean received = query().eq("user_id", userId).eq("voucher_id", voucherId).count() > 0;
+        if (received) {
+            return Result.fail("不能重复领取");
+        }
+
+        VoucherOrder voucherOrder = new VoucherOrder();
+        // 普通券不依赖 Redis 生成订单号，使用 MyBatis-Plus 的雪花 ID。
+        voucherOrder.setId(IdWorker.getId());
+        voucherOrder.setUserId(userId);
+        voucherOrder.setVoucherId(voucherId);
+        voucherOrder.setPayType(1);
+        voucherOrder.setStatus(1);
+        try {
+            if (!save(voucherOrder)) {
+                return Result.fail("领取失败，请稍后重试");
+            }
+        } catch (DuplicateKeyException e) {
+            // 并发请求同时通过预检时，由数据库唯一索引保证只会成功一次。
+            return Result.fail("不能重复领取");
+        }
+        return Result.ok(voucherOrder.getId());
+    }
+
+    @Override
+    public Result queryMyVouchers() {
+        Long userId = UserHolder.getUser().getId();
+        List<VoucherOrder> rawOrders = query().eq("user_id", userId).orderByDesc("create_time").list();
+        // 业务规则是一人一券。即使旧数据或历史测试曾留下重复订单，
+        // 列表也只展示同一 voucherId 最新的一条，不能让用户看到多张重复券。
+        List<VoucherOrder> orders = rawOrders.stream()
+                .collect(Collectors.toMap(VoucherOrder::getVoucherId, Function.identity(), (newer, ignored) -> newer,
+                        java.util.LinkedHashMap::new))
+                .values().stream().collect(Collectors.toList());
+        if (orders.isEmpty()) {
+            return Result.ok(Collections.emptyList());
+        }
+        Set<Long> voucherIds = orders.stream().map(VoucherOrder::getVoucherId).collect(Collectors.toSet());
+        Map<Long, Voucher> voucherMap = voucherService.listByIds(voucherIds).stream()
+                .collect(Collectors.toMap(Voucher::getId, Function.identity()));
+        Map<Long, SeckillVoucher> seckillMap = seckillVoucherService.query()
+                .in("voucher_id", voucherIds).list().stream()
+                .collect(Collectors.toMap(SeckillVoucher::getVoucherId, Function.identity()));
+        Set<Long> shopIds = voucherMap.values().stream().map(Voucher::getShopId)
+                .filter(java.util.Objects::nonNull).collect(Collectors.toSet());
+        Map<Long, Shop> shopMap = shopIds.isEmpty() ? Collections.emptyMap()
+                : shopMapper.selectBatchIds(shopIds).stream()
+                        .collect(Collectors.toMap(Shop::getId, Function.identity()));
+
+        List<MyVoucherDTO> result = orders.stream().map(order -> {
+            Voucher voucher = voucherMap.get(order.getVoucherId());
+            MyVoucherDTO dto = new MyVoucherDTO();
+            dto.setOrderId(order.getId());
+            dto.setVoucherId(order.getVoucherId());
+            dto.setOrderStatus(order.getStatus());
+            dto.setReceivedAt(order.getCreateTime());
+            if (voucher == null) {
+                dto.setTitle("优惠券已不可用");
+                dto.setVoucherStatus(3);
+                return dto;
+            }
+            dto.setShopId(voucher.getShopId());
+            dto.setTitle(voucher.getTitle());
+            dto.setSubTitle(voucher.getSubTitle());
+            dto.setPayValue(voucher.getPayValue());
+            dto.setActualValue(voucher.getActualValue());
+            dto.setType(voucher.getType());
+            dto.setVoucherStatus(voucher.getStatus());
+            Shop shop = shopMap.get(voucher.getShopId());
+            if (shop != null) {
+                dto.setShopName(shop.getName());
+            }
+            SeckillVoucher seckillVoucher = seckillMap.get(voucher.getId());
+            if (seckillVoucher != null) {
+                dto.setBeginTime(seckillVoucher.getBeginTime());
+                dto.setEndTime(seckillVoucher.getEndTime());
+            }
+            return dto;
+        }).collect(Collectors.toList());
+        return Result.ok(result);
+    }
+
     @Transactional
     public void createVoucherOrder(VoucherOrder voucherOrder) {
         // 5.兜底幂等：数据库层一人一单校验（防止 Redis 幂等 key 过期后的极端情况）

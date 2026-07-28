@@ -4,8 +4,10 @@ package com.smartcampus.controller;
 import javax.annotation.Resource;
 
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
@@ -34,8 +36,7 @@ public class VoucherController {
      */
     @PostMapping
     public Result addVoucher(@RequestBody Voucher voucher) {
-        voucherService.save(voucher);
-        return Result.ok(voucher.getId());
+        return voucherService.addVoucher(voucher);
     }
 
     /**
@@ -45,8 +46,7 @@ public class VoucherController {
      */
     @PostMapping("seckill")
     public Result addSeckillVoucher(@RequestBody Voucher voucher) {
-        voucherService.addSeckillVoucher(voucher);
-        return Result.ok(voucher.getId());
+        return voucherService.addSeckillVoucher(voucher);
     }
 
     /**
@@ -57,5 +57,27 @@ public class VoucherController {
     @GetMapping("/list/{shopId}")
     public Result queryVoucherOfShop(@PathVariable("shopId") Long shopId) {
        return voucherService.queryVoucherOfShop(shopId);
+    }
+
+    /** 更新券的基础信息；券类型不可通过该接口变更。 */
+    @PutMapping("/{id}")
+    public Result updateVoucher(@PathVariable("id") Long voucherId, @RequestBody Voucher voucher) {
+        return voucherService.updateVoucher(voucherId, voucher);
+    }
+
+    /**
+     * 更新上下架状态：1 上架、2 下架、3 过期。
+     * 秒杀券下架或过期后会同步移除 Redis 库存，阻止绕过前端的抢购请求。
+     */
+    @PutMapping("/{id}/status/{status}")
+    public Result changeVoucherStatus(@PathVariable("id") Long voucherId,
+            @PathVariable Integer status) {
+        return voucherService.changeVoucherStatus(voucherId, status);
+    }
+
+    /** 物理删除；已存在领取记录的券不可删除，只能下架。 */
+    @DeleteMapping("/{id}")
+    public Result deleteVoucher(@PathVariable("id") Long voucherId) {
+        return voucherService.deleteVoucher(voucherId);
     }
 }

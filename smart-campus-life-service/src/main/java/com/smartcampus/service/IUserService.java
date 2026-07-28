@@ -30,6 +30,15 @@ public interface IUserService extends IService<User> {
      */
     Result login(LoginFormDTO loginForm, HttpSession session);
 
+    /** 删除当前登录令牌。 */
+    Result logout(String token);
+
+    /** 管理员分页查询用户。 */
+    Result queryUsersForManage(String phone, Integer current);
+
+    /** 管理员设置用户角色。 */
+    Result changeUserRole(Long userId, Integer role);
+
     Result sign();
 
     Result signCount();

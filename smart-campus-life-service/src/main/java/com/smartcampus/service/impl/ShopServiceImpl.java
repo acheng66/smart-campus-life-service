@@ -27,12 +27,17 @@ import org.redisson.api.RedissonClient;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.smartcampus.dto.Result;
+import com.smartcampus.dto.UserDTO;
 import com.smartcampus.entity.Shop;
+import com.smartcampus.entity.User;
 import com.smartcampus.mapper.ShopMapper;
+import com.smartcampus.mapper.UserMapper;
 import com.smartcampus.service.IShopService;
 import com.smartcampus.utils.RedisConstants;
 import com.smartcampus.utils.ShopBloomFilter;
 import com.smartcampus.utils.SystemConstants;
+import com.smartcampus.utils.UserHolder;
+import com.smartcampus.utils.UserRole;
 
 import cn.hutool.core.util.StrUtil;
 import cn.hutool.json.JSONUtil;
@@ -51,6 +56,8 @@ public class ShopServiceImpl extends ServiceImpl<ShopMapper, Shop> implements IS
     private RedissonClient redissonClient;
     @Resource
     private ShopBloomFilter shopBloomFilter;
+    @Resource
+    private UserMapper userMapper;
 
     /**
      * 根据id查询商铺信息
@@ -170,6 +177,18 @@ public class ShopServiceImpl extends ServiceImpl<ShopMapper, Shop> implements IS
         if (oldShop == null) {
             return Result.fail("店铺不存在");
         }
+        UserDTO operator = UserHolder.getUser();
+        if (operator == null) {
+            return Result.fail("请先登录");
+        }
+        boolean isAdmin = Integer.valueOf(UserRole.ADMIN).equals(operator.getRole());
+        boolean isOwner = Integer.valueOf(UserRole.MERCHANT).equals(operator.getRole())
+                && operator.getId().equals(oldShop.getOwnerId());
+        if (!isAdmin && !isOwner) {
+            return Result.fail("无权修改该店铺");
+        }
+        // 店铺归属只能由管理员的 /admin/shops/{id}/owner 接口变更，不能混在资料编辑里。
+        shop.setOwnerId(oldShop.getOwnerId());
 
         // 先更新数据库。缓存清理必须发生在事务提交后，否则读请求可能把
         // 事务提交前的旧数据重新写回缓存。
@@ -206,7 +225,7 @@ public class ShopServiceImpl extends ServiceImpl<ShopMapper, Shop> implements IS
      */
     private void refreshShopGeoIndex(Shop oldShop, Long shopId) {
         try {
-            if (oldShop.getTypeId() != null) {
+            if (oldShop != null && oldShop.getTypeId() != null) {
                 stringRedisTemplate.opsForGeo().remove(
                         RedisConstants.SHOP_GEO_KEY + oldShop.getTypeId(), shopId.toString());
             }
@@ -275,5 +294,114 @@ public class ShopServiceImpl extends ServiceImpl<ShopMapper, Shop> implements IS
             shop.setDistance(distanceMap.get(shop.getId().toString()).getValue());
         }
         return Result.ok(shops);
+    }
+
+    @Override
+    public Result queryManageableShops() {
+        UserDTO user = UserHolder.getUser();
+        if (user == null) {
+            return Result.fail("请先登录");
+        }
+        if (Integer.valueOf(UserRole.ADMIN).equals(user.getRole())) {
+            return Result.ok(list());
+        }
+        if (Integer.valueOf(UserRole.MERCHANT).equals(user.getRole())) {
+            return Result.ok(query().eq("owner_id", user.getId()).list());
+        }
+        return Result.fail("没有店铺管理权限");
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public Result createManagedShop(Shop shop) {
+        if (!isCurrentUserAdmin()) {
+            return Result.fail("仅管理员可以新增店铺");
+        }
+        if (shop == null || StrUtil.isBlank(shop.getName())) {
+            return Result.fail("店铺名称不能为空");
+        }
+        Long ownerId = shop.getOwnerId();
+        if (ownerId != null) {
+            if (!promoteUserToMerchant(ownerId)) {
+                return Result.fail("归属商家不存在或角色更新失败");
+            }
+        }
+        if (!save(shop)) {
+            return Result.fail("新增店铺失败");
+        }
+        Long shopId = shop.getId();
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronizationAdapter() {
+            @Override
+            public void afterCommit() {
+                // 新店铺没有旧 GEO 记录，提交后仅写入新的位置索引。
+                refreshShopGeoIndex(null, shopId);
+            }
+        });
+        return Result.ok(shopId);
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public Result assignShopOwner(Long shopId, Long userId) {
+        if (!isCurrentUserAdmin()) {
+            return Result.fail("仅管理员可以分配商家");
+        }
+        Shop shop = getById(shopId);
+        if (shop == null) {
+            return Result.fail("店铺不存在");
+        }
+        if (!promoteUserToMerchant(userId)) {
+            return Result.fail("用户不存在或角色更新失败");
+        }
+        if (!update().eq("id", shopId).set("owner_id", userId).update()) {
+            throw new IllegalStateException("绑定店铺商家失败");
+        }
+        evictShopCacheAfterCommit(shopId);
+        return Result.ok();
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public Result clearShopOwner(Long shopId) {
+        if (!isCurrentUserAdmin()) {
+            return Result.fail("仅管理员可以解除商家归属");
+        }
+        if (getById(shopId) == null) {
+            return Result.fail("店铺不存在");
+        }
+        if (!update().eq("id", shopId).set("owner_id", null).update()) {
+            return Result.fail("解除店铺归属失败");
+        }
+        evictShopCacheAfterCommit(shopId);
+        return Result.ok();
+    }
+
+    /** 归属操作会修改店铺详情中的 ownerId，因此提交后必须让详情缓存失效。 */
+    private void evictShopCacheAfterCommit(Long shopId) {
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronizationAdapter() {
+            @Override
+            public void afterCommit() {
+                evictShopCache(shopId);
+            }
+        });
+    }
+
+    private boolean isCurrentUserAdmin() {
+        UserDTO user = UserHolder.getUser();
+        return user != null && Integer.valueOf(UserRole.ADMIN).equals(user.getRole());
+    }
+
+    /** 用户必须存在；一旦被分配店铺，就获得商家角色。管理员不能被降级为商家。 */
+    private boolean promoteUserToMerchant(Long userId) {
+        if (userId == null) {
+            return false;
+        }
+        User user = userMapper.selectById(userId);
+        if (user == null || Integer.valueOf(UserRole.ADMIN).equals(user.getRole())) {
+            return false;
+        }
+        return userMapper.update(null, new com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper<User>()
+                .eq("id", userId)
+                .set("role", UserRole.MERCHANT)) == 1;
     }
 }

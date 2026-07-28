@@ -5,7 +5,6 @@ import javax.annotation.Resource;
 
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
-import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -43,21 +42,15 @@ public class ShopController {
         return shopService.queryShopById(id);
     }
 
-    /**
-     * 新增商铺信息
-     * @param shop 商铺数据
-     * @return 商铺id
-     */
-    @PostMapping
-    public Result saveShop(@RequestBody Shop shop) {
-        // 写入数据库
-        shopService.save(shop);
-        // 返回店铺id
-        return Result.ok(shop.getId());
+    /** 当前管理员或商家可管理的店铺列表。 */
+    @GetMapping("/manage/mine")
+    public Result queryManageableShops() {
+        return shopService.queryManageableShops();
     }
 
     /**
-     * 更新商铺信息
+     * 管理员或店铺所属商家更新店铺信息。
+     * 新增店铺、分配商家均由 /admin/shops 系列接口处理。
      * @param shop 商铺数据
      * @return 无
      */

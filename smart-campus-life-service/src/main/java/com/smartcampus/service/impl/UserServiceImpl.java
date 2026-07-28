@@ -5,6 +5,7 @@ import java.time.format.DateTimeFormatter;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.TimeUnit;
 
 import javax.annotation.Resource;
@@ -13,18 +14,25 @@ import javax.servlet.http.HttpSession;
 import org.springframework.data.redis.connection.BitFieldSubCommands;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
+import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
+import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.smartcampus.dto.LoginFormDTO;
 import com.smartcampus.dto.Result;
 import com.smartcampus.dto.UserDTO;
+import com.smartcampus.dto.UserManageDTO;
 import com.smartcampus.entity.User;
+import com.smartcampus.entity.Shop;
+import com.smartcampus.mapper.ShopMapper;
 import com.smartcampus.mapper.UserMapper;
 import com.smartcampus.service.IUserService;
 import com.smartcampus.utils.RedisConstants;
 import com.smartcampus.utils.RegexUtils;
 import com.smartcampus.utils.SystemConstants;
 import com.smartcampus.utils.UserHolder;
+import com.smartcampus.utils.UserRole;
 
 import cn.hutool.core.bean.BeanUtil;
 import cn.hutool.core.bean.copier.CopyOptions;
@@ -43,6 +51,8 @@ import lombok.extern.slf4j.Slf4j;
 public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements IUserService {
     @Resource
     private StringRedisTemplate stringRedisTemplate;
+    @Resource
+    private ShopMapper shopMapper;
     /**
      * 发送手机验证码
      * @param phone
@@ -94,6 +104,8 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements IU
             user = new User();
             user.setPhone(phone);
             user.setNickName( SystemConstants.USER_NICK_NAME_PREFIX + RandomUtil.randomString(10));
+            // 自助注册账号一律是学生，管理员身份只能由数据库迁移或受控管理流程授予。
+            user.setRole(UserRole.STUDENT);
             save(user);
         }
         //6.保存用户信息到redis中
@@ -112,6 +124,76 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements IU
         stringRedisTemplate.expire(RedisConstants.LOGIN_USER_KEY + token, RedisConstants.LOGIN_USER_TTL, TimeUnit.MINUTES);
         //7.返回
         return Result.ok(token);
+    }
+
+    @Override
+    public Result logout(String token) {
+        if (token != null && !token.trim().isEmpty()) {
+            stringRedisTemplate.delete(RedisConstants.LOGIN_USER_KEY + token);
+        }
+        return Result.ok();
+    }
+
+    @Override
+    public Result queryUsersForManage(String phone, Integer current) {
+        int pageNo = current == null || current < 1 ? 1 : current;
+        Page<User> page = query()
+                .like(phone != null && !phone.trim().isEmpty(), "phone", phone)
+                .orderByAsc("id")
+                .page(new Page<>(pageNo, 20));
+        Page<UserManageDTO> result = new Page<>(page.getCurrent(), page.getSize(), page.getTotal());
+        result.setRecords(BeanUtil.copyToList(page.getRecords(), UserManageDTO.class));
+        return Result.ok(result);
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public Result changeUserRole(Long userId, Integer role) {
+        if (role == null || (role != UserRole.STUDENT && role != UserRole.ADMIN && role != UserRole.MERCHANT)) {
+            return Result.fail("角色仅支持 0（学生）、1（管理员）；商家由店铺分配时自动设置");
+        }
+        User target = getById(userId);
+        if (target == null) {
+            return Result.fail("用户不存在");
+        }
+        // 商家必须与至少一个店铺同时建立归属关系，不能只修改角色字段。
+        if (role == UserRole.MERCHANT) {
+            return Result.fail("请在店铺管理页分配店铺，系统会自动设为商家");
+        }
+        Long operatorId = UserHolder.getUser().getId();
+        if (operatorId.equals(userId) && role != UserRole.ADMIN) {
+            return Result.fail("不能撤销自己的管理员身份");
+        }
+        if (Integer.valueOf(UserRole.ADMIN).equals(target.getRole()) && role != UserRole.ADMIN
+                && query().eq("role", UserRole.ADMIN).count() <= 1) {
+            return Result.fail("系统至少需要保留一名管理员");
+        }
+        if (!update().eq("id", userId).set("role", role).update()) {
+            return Result.fail("更新用户角色失败");
+        }
+        // 撤销商家角色后同步解除店铺归属，避免无角色用户仍残留 owner_id。
+        shopMapper.update(null, new UpdateWrapper<Shop>()
+                .eq("owner_id", userId)
+                .set("owner_id", null));
+        revokeUserTokens(userId);
+        return Result.ok();
+    }
+
+    /**
+     * 角色变更后立即删除该用户的全部 Redis 登录态，避免旧 token 在 TTL 内继续保留旧权限。
+     * 当前项目的登录量较小，扫描 login:token:* 可保证权限实时收敛。
+     */
+    private void revokeUserTokens(Long userId) {
+        Set<String> tokenKeys = stringRedisTemplate.keys(RedisConstants.LOGIN_USER_KEY + "*");
+        if (tokenKeys == null || tokenKeys.isEmpty()) {
+            return;
+        }
+        for (String tokenKey : tokenKeys) {
+            Object tokenUserId = stringRedisTemplate.opsForHash().get(tokenKey, "id");
+            if (tokenUserId != null && userId.toString().equals(tokenUserId.toString())) {
+                stringRedisTemplate.delete(tokenKey);
+            }
+        }
     }
 
     @Override

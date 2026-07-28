@@ -92,6 +92,9 @@ public class Shop implements Serializable {
      */
     private String openHours;
 
+    /** 店铺归属商家的用户 ID；平台管理员不受此字段限制。 */
+    private Long ownerId;
+
     /**
      * 创建时间
      */
