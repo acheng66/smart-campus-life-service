@@ -1,8 +1,8 @@
 package com.smartcampus.service;
 
+import com.baomidou.mybatisplus.extension.service.IService;
 import com.smartcampus.dto.Result;
 import com.smartcampus.entity.Shop;
-import com.baomidou.mybatisplus.extension.service.IService;
 
 /**
  * <p>

@@ -1,7 +1,17 @@
 package com.smartcampus.controller;
 
 
-import cn.hutool.core.bean.BeanUtil;
+import javax.annotation.Resource;
+import javax.servlet.http.HttpSession;
+
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.bind.annotation.RestController;
+
 import com.smartcampus.dto.LoginFormDTO;
 import com.smartcampus.dto.Result;
 import com.smartcampus.dto.UserDTO;
@@ -10,11 +20,9 @@ import com.smartcampus.entity.UserInfo;
 import com.smartcampus.service.IUserInfoService;
 import com.smartcampus.service.IUserService;
 import com.smartcampus.utils.UserHolder;
-import lombok.extern.slf4j.Slf4j;
-import org.springframework.web.bind.annotation.*;
 
-import javax.annotation.Resource;
-import javax.servlet.http.HttpSession;
+import cn.hutool.core.bean.BeanUtil;
+import lombok.extern.slf4j.Slf4j;
 
 /**
  * <p>

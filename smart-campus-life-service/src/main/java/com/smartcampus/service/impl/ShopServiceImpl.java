@@ -1,19 +1,18 @@
 package com.smartcampus.service.impl;
 
-import cn.hutool.core.bean.BeanUtil;
-import cn.hutool.core.util.BooleanUtil;
-import cn.hutool.core.util.StrUtil;
-import cn.hutool.json.JSONUtil;
-import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
-import com.smartcampus.dto.Result;
-import com.smartcampus.entity.Shop;
-import com.smartcampus.mapper.ShopMapper;
-import com.smartcampus.service.IShopService;
-import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
-import com.smartcampus.utils.CachClient;
-import com.smartcampus.utils.RedisConstants;
-import com.smartcampus.utils.RedisData;
-import com.smartcampus.utils.SystemConstants;
+import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ThreadLocalRandom;
+import java.util.concurrent.TimeUnit;
+
+import javax.annotation.Resource;
+
 import org.springframework.data.geo.Circle;
 import org.springframework.data.geo.Distance;
 import org.springframework.data.geo.GeoResult;
@@ -24,13 +23,20 @@ import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import javax.annotation.Resource;
-import java.time.LocalDateTime;
-import java.util.*;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.ThreadLocalRandom;
-import java.util.concurrent.TimeUnit;
+import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
+import com.smartcampus.dto.Result;
+import com.smartcampus.entity.Shop;
+import com.smartcampus.mapper.ShopMapper;
+import com.smartcampus.service.IShopService;
+import com.smartcampus.utils.CachClient;
+import com.smartcampus.utils.RedisConstants;
+import com.smartcampus.utils.RedisData;
+import com.smartcampus.utils.SystemConstants;
+
+import cn.hutool.core.util.BooleanUtil;
+import cn.hutool.core.util.StrUtil;
+import cn.hutool.json.JSONUtil;
 
 /**
  * <p>

@@ -1,7 +1,7 @@
 package com.smartcampus.mapper;
 
-import com.smartcampus.entity.BlogComments;
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
+import com.smartcampus.entity.BlogComments;
 
 /**
  * <p>

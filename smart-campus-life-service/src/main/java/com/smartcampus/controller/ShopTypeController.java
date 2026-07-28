@@ -1,15 +1,14 @@
 package com.smartcampus.controller;
 
 
-import com.smartcampus.dto.Result;
-import com.smartcampus.entity.ShopType;
-import com.smartcampus.service.IShopTypeService;
+import javax.annotation.Resource;
+
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
-import javax.annotation.Resource;
-import java.util.List;
+import com.smartcampus.dto.Result;
+import com.smartcampus.service.IShopTypeService;
 
 /**
  * <p>

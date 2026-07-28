@@ -1,10 +1,8 @@
 package com.smartcampus.service;
 
+import com.baomidou.mybatisplus.extension.service.IService;
 import com.smartcampus.dto.Result;
 import com.smartcampus.entity.ShopType;
-import com.baomidou.mybatisplus.extension.service.IService;
-
-import java.util.List;
 
 /**
  * <p>

@@ -1,23 +1,24 @@
 package com.smartcampus;
 
-import com.smartcampus.entity.Shop;
-import com.smartcampus.service.IShopService;
-import com.smartcampus.utils.CachClient;
-import com.smartcampus.utils.RedisIdWorker;
-import org.junit.jupiter.api.Test;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.data.geo.Point;
-import org.springframework.data.redis.connection.RedisGeoCommands;
-import org.springframework.data.redis.core.StringRedisTemplate;
-
-import javax.annotation.Resource;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.stream.Collectors;
+
+import javax.annotation.Resource;
+
+import org.junit.jupiter.api.Test;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.data.geo.Point;
+import org.springframework.data.redis.connection.RedisGeoCommands;
+import org.springframework.data.redis.core.StringRedisTemplate;
+
+import com.smartcampus.entity.Shop;
+import com.smartcampus.service.IShopService;
+import com.smartcampus.utils.CachClient;
+import com.smartcampus.utils.RedisIdWorker;
 
 @SpringBootTest
 class SmartCampusLifeApplicationTests {

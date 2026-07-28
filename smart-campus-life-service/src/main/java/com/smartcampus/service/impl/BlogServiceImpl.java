@@ -1,8 +1,19 @@
 package com.smartcampus.service.impl;
 
-import cn.hutool.core.bean.BeanUtil;
-import cn.hutool.core.util.StrUtil;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+import java.util.Set;
+import java.util.stream.Collectors;
+
+import javax.annotation.Resource;
+
+import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.data.redis.core.ZSetOperations;
+import org.springframework.stereotype.Service;
+
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.smartcampus.dto.Result;
 import com.smartcampus.dto.ScrollResult;
 import com.smartcampus.dto.UserDTO;
@@ -11,22 +22,14 @@ import com.smartcampus.entity.Follow;
 import com.smartcampus.entity.User;
 import com.smartcampus.mapper.BlogMapper;
 import com.smartcampus.service.IBlogService;
-import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.smartcampus.service.IFollowService;
 import com.smartcampus.service.IUserService;
 import com.smartcampus.utils.RedisConstants;
 import com.smartcampus.utils.SystemConstants;
 import com.smartcampus.utils.UserHolder;
-import org.springframework.data.redis.core.StringRedisTemplate;
-import org.springframework.data.redis.core.ZSetOperations;
-import org.springframework.stereotype.Service;
 
-import javax.annotation.Resource;
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.List;
-import java.util.Set;
-import java.util.stream.Collectors;
+import cn.hutool.core.bean.BeanUtil;
+import cn.hutool.core.util.StrUtil;
 
 /**
  * <p>

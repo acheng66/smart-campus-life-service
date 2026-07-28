@@ -1,19 +1,21 @@
 package com.smartcampus.service.impl;
 
-import cn.hutool.json.JSONUtil;
+import java.util.ArrayList;
+import java.util.List;
+
+import javax.annotation.Resource;
+
+import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.stereotype.Service;
+
+import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.smartcampus.dto.Result;
 import com.smartcampus.entity.ShopType;
 import com.smartcampus.mapper.ShopTypeMapper;
 import com.smartcampus.service.IShopTypeService;
-import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.smartcampus.utils.RedisConstants;
-import org.springframework.data.redis.core.StringRedisTemplate;
-import org.springframework.stereotype.Service;
 
-import javax.annotation.Resource;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.stream.Collectors;
+import cn.hutool.json.JSONUtil;
 
 /**
  * <p>

@@ -1,16 +1,9 @@
 package com.smartcampus.service.impl;
 
-import com.smartcampus.config.RabbitMQConfig;
-import com.smartcampus.dto.Result;
-import com.smartcampus.entity.SeckillVoucher;
-import com.smartcampus.entity.VoucherOrder;
-import com.smartcampus.mapper.VoucherOrderMapper;
-import com.smartcampus.service.ISeckillVoucherService;
-import com.smartcampus.service.IVoucherOrderService;
-import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
-import com.smartcampus.utils.RedisIdWorker;
-import com.smartcampus.utils.UserHolder;
-import lombok.extern.slf4j.Slf4j;
+import java.util.Collections;
+
+import javax.annotation.Resource;
+
 import org.redisson.api.RLock;
 import org.redisson.api.RedissonClient;
 import org.springframework.amqp.rabbit.annotation.RabbitListener;
@@ -20,8 +13,18 @@ import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.script.DefaultRedisScript;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
-import javax.annotation.Resource;
-import java.util.Collections;
+
+import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
+import com.smartcampus.config.RabbitMQConfig;
+import com.smartcampus.dto.Result;
+import com.smartcampus.entity.VoucherOrder;
+import com.smartcampus.mapper.VoucherOrderMapper;
+import com.smartcampus.service.ISeckillVoucherService;
+import com.smartcampus.service.IVoucherOrderService;
+import com.smartcampus.utils.RedisIdWorker;
+import com.smartcampus.utils.UserHolder;
+
+import lombok.extern.slf4j.Slf4j;
 
 /**
  * <p>

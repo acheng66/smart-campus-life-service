@@ -1,7 +1,7 @@
 package com.smartcampus.mapper;
 
-import com.smartcampus.entity.ShopType;
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
+import com.smartcampus.entity.ShopType;
 
 /**
  * <p>

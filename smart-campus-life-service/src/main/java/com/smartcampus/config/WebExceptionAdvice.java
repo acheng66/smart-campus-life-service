@@ -1,9 +1,11 @@
 package com.smartcampus.config;
 
-import com.smartcampus.dto.Result;
-import lombok.extern.slf4j.Slf4j;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+
+import com.smartcampus.dto.Result;
+
+import lombok.extern.slf4j.Slf4j;
 
 @Slf4j
 @RestControllerAdvice
