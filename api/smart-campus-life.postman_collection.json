@@ -1,0 +1,93 @@
+{
+  "info": {
+    "_postman_id": "80d5cfdf-6761-4d59-a46e-f0b48dc601d5",
+    "name": "智享校园生活服务平台 API",
+    "description": "包含 31 个已实现接口、32 条测试请求（按分类查商户提供带坐标与不带坐标两个用例）。导入 Apipost 时选择 Postman Collection v2.1。先发送验证码并登录；登录成功后，将响应 data 的 token 填入集合变量 token。",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "baseUrl", "value": "http://127.0.0.1:8082", "type": "string" },
+    { "key": "phone", "value": "18722310795", "type": "string" },
+    { "key": "code", "value": "123456", "type": "string" },
+    { "key": "token", "value": "", "type": "string" },
+    { "key": "userId", "value": "1", "type": "string" },
+    { "key": "targetUserId", "value": "2", "type": "string" },
+    { "key": "shopId", "value": "1", "type": "string" },
+    { "key": "blogId", "value": "4", "type": "string" },
+    { "key": "voucherId", "value": "1", "type": "string" },
+    { "key": "imageName", "value": "/blogs/0/0/example.png", "type": "string" }
+  ],
+  "item": [
+    {
+      "name": "01 用户认证与签到（8）",
+      "item": [
+        { "name": "发送验证码", "request": { "method": "POST", "url": "{{baseUrl}}/user/code?phone={{phone}}" } },
+        {
+          "name": "登录（自动保存 token）",
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["const body = pm.response.json();", "if (body.success && body.data) pm.collectionVariables.set('token', body.data);"] } }],
+          "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\n  \"phone\": \"{{phone}}\",\n  \"code\": \"{{code}}\"\n}" }, "url": "{{baseUrl}}/user/login" }
+        },
+        { "name": "登出（当前接口未实现，预期返回失败）", "request": { "method": "POST", "header": [{ "key": "authorization", "value": "{{token}}" }], "url": "{{baseUrl}}/user/logout" } },
+        { "name": "获取当前用户", "request": { "method": "GET", "header": [{ "key": "authorization", "value": "{{token}}" }], "url": "{{baseUrl}}/user/me" } },
+        { "name": "查询用户详情", "request": { "method": "GET", "url": "{{baseUrl}}/user/info/{{userId}}" } },
+        { "name": "按 ID 查询用户", "request": { "method": "GET", "url": "{{baseUrl}}/user/{{userId}}" } },
+        { "name": "签到", "request": { "method": "POST", "header": [{ "key": "authorization", "value": "{{token}}" }], "url": "{{baseUrl}}/user/sign" } },
+        { "name": "查询连续签到数", "request": { "method": "GET", "header": [{ "key": "authorization", "value": "{{token}}" }], "url": "{{baseUrl}}/user/sign/count" } }
+      ]
+    },
+    {
+      "name": "02 商户分类与商户（7）",
+      "item": [
+        { "name": "查询商户分类", "request": { "method": "GET", "url": "{{baseUrl}}/shop-type/list" } },
+        { "name": "按 ID 查询商户", "request": { "method": "GET", "url": "{{baseUrl}}/shop/{{shopId}}" } },
+        { "name": "按分类分页查询（不带坐标）", "request": { "method": "GET", "url": "{{baseUrl}}/shop/of/type?typeId=1&current=1" } },
+        { "name": "按分类查询附近商户（带坐标）", "request": { "method": "GET", "url": "{{baseUrl}}/shop/of/type?typeId=1&current=1&x=120.149993&y=30.334229" } },
+        { "name": "按名称分页查询", "request": { "method": "GET", "url": "{{baseUrl}}/shop/of/name?name=食堂&current=1" } },
+        { "name": "新增商户", "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\n  \"name\": \"校园测试咖啡角\",\n  \"typeId\": 8,\n  \"images\": \"/imgs/campus/coffee-study.png\",\n  \"area\": \"图书馆一层\",\n  \"address\": \"图书馆一层东侧\",\n  \"x\": 120.149993,\n  \"y\": 30.334229,\n  \"avgPrice\": 1800,\n  \"openHours\": \"08:00-22:00\"\n}" }, "url": "{{baseUrl}}/shop" } },
+        { "name": "修改商户", "request": { "method": "PUT", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\n  \"id\": {{shopId}},\n  \"name\": \"一食堂风味窗口\",\n  \"avgPrice\": 1600\n}" }, "url": "{{baseUrl}}/shop" } }
+      ]
+    },
+    {
+      "name": "03 优惠券管理（3）",
+      "item": [
+        { "name": "查询店铺优惠券", "request": { "method": "GET", "url": "{{baseUrl}}/voucher/list/{{shopId}}" } },
+        { "name": "新增普通优惠券", "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\n  \"shopId\": {{shopId}},\n  \"title\": \"校园咖啡代金券\",\n  \"subTitle\": \"支付 8 元，抵扣 10 元\",\n  \"rules\": \"仅限到店核销\\n不兑现、不找零\",\n  \"payValue\": 800,\n  \"actualValue\": 1000,\n  \"type\": 0\n}" }, "url": "{{baseUrl}}/voucher" } },
+        { "name": "新增秒杀优惠券", "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\n  \"shopId\": {{shopId}},\n  \"title\": \"校园餐饮秒杀券\",\n  \"subTitle\": \"支付 40 元，抵扣 50 元\",\n  \"rules\": \"每位同学限购一张\",\n  \"payValue\": 4000,\n  \"actualValue\": 5000,\n  \"type\": 1,\n  \"stock\": 100,\n  \"beginTime\": \"2026-07-28T00:00:00\",\n  \"endTime\": \"2026-12-31T23:59:59\"\n}" }, "url": "{{baseUrl}}/voucher/seckill" } }
+      ]
+    },
+    {
+      "name": "04 秒杀订单（1）",
+      "item": [
+        { "name": "秒杀下单（需登录）", "request": { "method": "POST", "header": [{ "key": "authorization", "value": "{{token}}" }], "url": "{{baseUrl}}/voucher-order/seckill/{{voucherId}}" } }
+      ]
+    },
+    {
+      "name": "05 探店笔记（8）",
+      "item": [
+        { "name": "发布笔记（需登录）", "request": { "method": "POST", "header": [{ "key": "authorization", "value": "{{token}}" }, { "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\n  \"shopId\": {{shopId}},\n  \"title\": \"校园食堂午餐分享\",\n  \"images\": \"/imgs/campus/cafeteria-meal.png\",\n  \"content\": \"一食堂今天的烤肉饭很不错，出餐也很快。\"\n}" }, "url": "{{baseUrl}}/blog" } },
+        { "name": "点赞或取消点赞（需登录）", "request": { "method": "PUT", "header": [{ "key": "authorization", "value": "{{token}}" }], "url": "{{baseUrl}}/blog/like/{{blogId}}" } },
+        { "name": "查询我的笔记（需登录）", "request": { "method": "GET", "header": [{ "key": "authorization", "value": "{{token}}" }], "url": "{{baseUrl}}/blog/of/me?current=1" } },
+        { "name": "查询热门笔记", "request": { "method": "GET", "url": "{{baseUrl}}/blog/hot?current=1" } },
+        { "name": "查询笔记详情", "request": { "method": "GET", "url": "{{baseUrl}}/blog/{{blogId}}" } },
+        { "name": "查询笔记点赞用户", "request": { "method": "GET", "url": "{{baseUrl}}/blog/likes/{{blogId}}" } },
+        { "name": "按用户查询笔记", "request": { "method": "GET", "url": "{{baseUrl}}/blog/of/user?id={{userId}}&current=1" } },
+        { "name": "查询关注用户的笔记（需登录）", "request": { "method": "GET", "header": [{ "key": "authorization", "value": "{{token}}" }], "url": "{{baseUrl}}/blog/of/follow?lastId=9999999999999&offset=0" } }
+      ]
+    },
+    {
+      "name": "06 关注关系（3）",
+      "item": [
+        { "name": "关注用户（需登录）", "request": { "method": "PUT", "header": [{ "key": "authorization", "value": "{{token}}" }], "url": "{{baseUrl}}/follow/{{targetUserId}}/true" } },
+        { "name": "查询是否关注（需登录）", "request": { "method": "GET", "header": [{ "key": "authorization", "value": "{{token}}" }], "url": "{{baseUrl}}/follow/or/not/{{targetUserId}}" } },
+        { "name": "查询共同关注（需登录）", "request": { "method": "GET", "header": [{ "key": "authorization", "value": "{{token}}" }], "url": "{{baseUrl}}/follow/common/{{targetUserId}}" } }
+      ]
+    },
+    {
+      "name": "07 笔记图片上传（2）",
+      "item": [
+        { "name": "上传笔记图片（需选择本地文件）", "request": { "method": "POST", "header": [{ "key": "authorization", "value": "{{token}}" }], "body": { "mode": "formdata", "formdata": [{ "key": "file", "type": "file", "src": "", "description": "在 Apipost 中选择要上传的图片" }] }, "url": "{{baseUrl}}/upload/blog" } },
+        { "name": "删除笔记图片", "request": { "method": "GET", "url": "{{baseUrl}}/upload/blog/delete?name={{imageName}}" } }
+      ]
+    }
+  ]
+}
