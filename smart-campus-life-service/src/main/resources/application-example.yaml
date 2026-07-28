@@ -1,0 +1,40 @@
+server:
+  port: 8082
+
+spring:
+  application:
+    name: smart-campus-life
+  datasource:
+    driver-class-name: com.mysql.jdbc.Driver
+    url: jdbc:mysql://localhost:3306/smart_campus_life?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC
+    username: ${MYSQL_USERNAME:root}
+    password: ${MYSQL_PASSWORD}
+  redis:
+    host: localhost
+    port: 6379
+    database: 6
+  rabbitmq:
+    host: localhost
+    port: 5672
+    username: ${RABBITMQ_USERNAME:hmdp}
+    password: ${RABBITMQ_PASSWORD}
+    virtual-host: ${RABBITMQ_VHOST:hmdp}
+    publisher-confirm-type: correlated
+    publisher-returns: true
+    listener:
+      simple:
+        acknowledge-mode: auto
+        prefetch: 1
+        retry:
+          enabled: true
+          max-attempts: 3
+          initial-interval: 1000ms
+          multiplier: 2
+          max-interval: 10000ms
+
+mybatis-plus:
+  type-aliases-package: com.smartcampus.entity
+
+logging:
+  level:
+    com.smartcampus: debug
