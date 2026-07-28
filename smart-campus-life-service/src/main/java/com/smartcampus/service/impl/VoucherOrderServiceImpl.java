@@ -81,7 +81,6 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
         Long orderId = voucherOrder.getId();
         Long userId = voucherOrder.getUserId();
 
-        // ① 幂等检查：SETNX orderId，防止重复消费
         String idempotentKey = "order:idempotent:" + orderId;
         Boolean isFirstConsume = stringRedisTemplate.opsForValue()
                 .setIfAbsent(idempotentKey, "1", 24, java.util.concurrent.TimeUnit.HOURS);
@@ -89,19 +88,28 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
             log.warn("[幂等] 订单已处理过，跳过重复消费，orderId={}", orderId);
             return;
         }
-
-        // ② 分布式锁：防止并发下同一用户的竞争
-        RLock lock = redissonClient.getLock("lock:order:" + userId);
-        boolean isLock = lock.tryLock();
-        if (!isLock) {
-            // Bug Fix: 加锁失败须立即 return，否则 finally 中 unlock 会抛 IllegalMonitorStateException
-            log.error("获取分布式锁失败，orderId={}", orderId);
-            return;
+        if (isFirstConsume == null) {
+            throw new IllegalStateException("写入订单幂等标记失败，orderId=" + orderId);
         }
+
+        RLock lock = redissonClient.getLock("lock:order:" + userId);
         try {
+            if (!lock.tryLock()) {
+                log.error("获取分布式锁失败，orderId={}", orderId);
+                throw new IllegalStateException("获取订单锁失败，orderId=" + orderId);
+            }
             proxy.createVoucherOrder(voucherOrder);
+        } catch (RuntimeException e) {
+            // 本次消费未成功：撤销幂等标记，允许 RabbitMQ 重试时重新处理。
+            Boolean deleted = stringRedisTemplate.delete(idempotentKey);
+            if (!Boolean.TRUE.equals(deleted)) {
+                log.warn("撤销订单幂等标记失败，orderId={}", orderId);
+            }
+            throw e;
         } finally {
-            lock.unlock();
+            if (lock.isHeldByCurrentThread()) {
+                lock.unlock();
+            }
         }
     }
 
