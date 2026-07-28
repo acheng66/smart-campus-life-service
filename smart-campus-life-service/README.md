@@ -7,7 +7,7 @@
 ## 核心能力
 
 - **认证与鉴权**：验证码存 Redis（开发环境输出日志模拟发送）；登录成功后以 UUID 作为 Token、用户摘要存 Redis Hash；双拦截器完成 Token 刷新、`ThreadLocal` 用户透传与受保护接口鉴权。
-- **商户与缓存**：商户详情实现缓存空值、随机 TTL、互斥锁与逻辑过期等策略；附近商户使用 Redis GEO 按距离检索。
+- **商户与缓存**：商户详情实现缓存空值、随机 TTL、Redisson 互斥锁与提交后失效；附近商户使用 Redis GEO 按距离检索，并在商户更新后同步索引。
 - **优惠券秒杀**：Lua 脚本原子完成库存预扣减和一人一单校验；有效请求投递 RabbitMQ；消费者以 Redis 幂等键、Redisson 用户锁和 MySQL 条件扣减处理订单。
 - **交易兜底**：`tb_voucher_order(user_id, voucher_id)` 唯一索引保证同一用户不能为同一优惠券创建多笔订单；库存扣减使用 `stock > 0` 条件更新避免超卖。
 - **社区互动**：探店笔记发布、点赞、关注与共同关注。
@@ -76,3 +76,6 @@ mvn spring-boot:run
 
 `src/test/java/com/smartcampus/SmartCampusLifeApplicationTests.java`
 
+### Bloom Filter 定期重建
+
+应用使用 Spring `@Scheduled` 在每天 03:00 重建 Bloom Filter。可通过环境变量 `SHOP_BLOOM_REBUILD_CRON` 覆盖 Cron；多实例部署时，任务内部的 Redisson 锁会保证只有一个实例全量扫描数据库。

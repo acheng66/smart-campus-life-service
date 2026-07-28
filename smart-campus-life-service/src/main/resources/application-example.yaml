@@ -32,6 +32,11 @@ spring:
           multiplier: 2
           max-interval: 10000ms
 
+cache:
+  shop-bloom:
+    # 默认每天凌晨 03:00 重建；可通过 SHOP_BLOOM_REBUILD_CRON 覆盖。
+    rebuild-cron: ${SHOP_BLOOM_REBUILD_CRON:0 0 3 * * ?}
+
 mybatis-plus:
   type-aliases-package: com.smartcampus.entity
 
