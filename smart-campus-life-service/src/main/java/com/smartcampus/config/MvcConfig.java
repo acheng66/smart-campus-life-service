@@ -1,15 +1,15 @@
 package com.smartcampus.config;
 
-import com.smartcampus.utils.LoginInterceptor;
-import com.smartcampus.utils.RefreshTokenInterceptor;
-import com.smartcampus.utils.VoucherManageInterceptor;
-import com.smartcampus.utils.AdminOnlyInterceptor;
+import com.smartcampus.utils.auth.LoginInterceptor;
+import com.smartcampus.utils.auth.RefreshTokenInterceptor;
+import com.smartcampus.utils.auth.VoucherManageInterceptor;
+import com.smartcampus.utils.auth.AdminOnlyInterceptor;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.web.servlet.config.annotation.InterceptorRegistry;
 import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
 
-import javax.annotation.Resource;
+import jakarta.annotation.Resource;
 
 @Configuration
 public class MvcConfig implements WebMvcConfigurer {

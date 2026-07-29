@@ -84,10 +84,11 @@ public class RabbitMQConfig {
         });
 
         // ② 生产者 Return 回调：消息到达 Exchange 但路由不到 Queue 时触发
-        // 注意：Spring AMQP 2.2.x（Spring Boot 2.3.x）使用 setReturnCallback
-        rabbitTemplate.setReturnCallback((message, replyCode, replyText, exchange, routingKey) -> {
+        // Spring AMQP 3.x / Spring Boot 3 使用 ReturnedMessage 聚合返回信息。
+        rabbitTemplate.setReturnsCallback(returned -> {
             log.error("[RabbitMQ] 消息路由到 Queue 失败，exchange={}，routingKey={}，replyCode={}，replyText={}，message={}",
-                    exchange, routingKey, replyCode, replyText, message);
+                    returned.getExchange(), returned.getRoutingKey(), returned.getReplyCode(),
+                    returned.getReplyText(), returned.getMessage());
             // TODO: 可在此处将失败消息落库，人工补偿
         });
 

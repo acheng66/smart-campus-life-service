@@ -7,7 +7,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.stream.Collectors;
 
-import javax.annotation.Resource;
+import jakarta.annotation.Resource;
 
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -16,9 +16,9 @@ import org.springframework.data.redis.connection.RedisGeoCommands;
 import org.springframework.data.redis.core.StringRedisTemplate;
 
 import com.smartcampus.entity.Shop;
-import com.smartcampus.service.IShopService;
-import com.smartcampus.utils.CachClient;
-import com.smartcampus.utils.RedisIdWorker;
+import com.smartcampus.service.shop.IShopService;
+import com.smartcampus.utils.cache.CachClient;
+import com.smartcampus.utils.redis.RedisIdWorker;
 
 @SpringBootTest
 class SmartCampusLifeApplicationTests {
