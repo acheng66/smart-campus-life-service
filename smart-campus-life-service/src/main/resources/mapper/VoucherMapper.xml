@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
-<mapper namespace="com.smartcampus.mapper.VoucherMapper">
+<!-- namespace 必须与已重构后的 Mapper 接口全限定名完全一致，否则 MyBatis 无法绑定 XML 中的 SQL。 -->
+<mapper namespace="com.smartcampus.mapper.voucher.VoucherMapper">
 
     <select id="queryVoucherOfShop" resultType="com.smartcampus.entity.Voucher" parameterType="java.lang.Long">
         SELECT

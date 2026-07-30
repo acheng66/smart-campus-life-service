@@ -1,0 +1,18 @@
+services:
+  pgvector:
+    # 官方 pgvector PostgreSQL 镜像，内置 CREATE EXTENSION vector 所需扩展。
+    image: pgvector/pgvector:pg16
+    container_name: smart-campus-pgvector
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: smart_campus_ai
+      POSTGRES_USER: smart_campus_ai
+      POSTGRES_PASSWORD: smart_campus_ai
+    ports:
+      # 与本机可能已有的 PostgreSQL 5432 端口隔离。
+      - "5433:5432"
+    volumes:
+      - smart-campus-pgvector-data:/var/lib/postgresql/data
+
+volumes:
+  smart-campus-pgvector-data:

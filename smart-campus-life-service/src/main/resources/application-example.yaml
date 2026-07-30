@@ -5,14 +5,15 @@ spring:
   application:
     name: smart-campus-life
   datasource:
-    driver-class-name: com.mysql.jdbc.Driver
+    driver-class-name: com.mysql.cj.jdbc.Driver
     url: jdbc:mysql://localhost:3306/smart_campus_life?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC
     username: ${MYSQL_USERNAME:root}
     password: ${MYSQL_PASSWORD}
-  redis:
-    host: localhost
-    port: 6379
-    database: 6
+  data:
+    redis:
+      host: localhost
+      port: 6379
+      database: 6
   rabbitmq:
     host: localhost
     port: 5672
@@ -31,11 +32,53 @@ spring:
           initial-interval: 1000ms
           multiplier: 2
           max-interval: 10000ms
+  ai:
+    model:
+      chat: ${SPRING_AI_MODEL_CHAT:none}
+      embedding: ${SPRING_AI_MODEL_EMBEDDING:none}
+      image: none
+      moderation: none
+      audio:
+        speech: none
+        transcription: none
+    openai:
+      # DeepSeek 使用 OpenAI 兼容协议，因此仍复用 Spring AI OpenAI Starter。
+      base-url: ${DEEPSEEK_BASE_URL:https://api.deepseek.com}
+      api-key: ${DEEPSEEK_API_KEY:}
+      chat:
+        options:
+          model: ${DEEPSEEK_MODEL:deepseek-v4-flash}
+          temperature: 0.2
+      # 仅开启 RAG 时需要；Embedding 服务与 DeepSeek 聊天服务分开配置。
+      embedding:
+        base-url: ${EMBEDDING_BASE_URL:https://api.openai.com}
+        api-key: ${EMBEDDING_API_KEY:}
+        options:
+          model: ${EMBEDDING_MODEL:text-embedding-3-small}
 
 cache:
   shop-bloom:
     # 默认每天凌晨 03:00 重建；可通过 SHOP_BLOOM_REBUILD_CRON 覆盖。
     rebuild-cron: ${SHOP_BLOOM_REBUILD_CRON:0 0 3 * * ?}
+
+agent:
+  ai:
+    enabled: ${AGENT_AI_ENABLED:false}
+  memory:
+    short-ttl-hours: ${AGENT_SHORT_MEMORY_TTL_HOURS:24}
+    max-messages: ${AGENT_SHORT_MEMORY_MAX_MESSAGES:12}
+  rag:
+    enabled: ${AGENT_RAG_ENABLED:false}
+    # RAG 使用独立 PostgreSQL + pgvector，不会写入业务 MySQL。
+    datasource:
+      url: ${AGENT_RAG_PG_URL:jdbc:postgresql://localhost:5433/smart_campus_ai}
+      username: ${AGENT_RAG_PG_USERNAME:smart_campus_ai}
+      password: ${AGENT_RAG_PG_PASSWORD:smart_campus_ai}
+    schema-name: ${AGENT_RAG_PG_SCHEMA:public}
+    table-name: ${AGENT_RAG_PG_TABLE:agent_knowledge_vector}
+    initialize-schema: ${AGENT_RAG_INITIALIZE_SCHEMA:true}
+    rebuild-on-startup: ${AGENT_RAG_REBUILD_ON_STARTUP:true}
+    rebuild-cron: ${AGENT_RAG_REBUILD_CRON:0 30 3 * * ?}
 
 mybatis-plus:
   type-aliases-package: com.smartcampus.entity
