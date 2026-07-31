@@ -6,7 +6,6 @@ import org.springframework.ai.vectorstore.VectorStore;
 import org.springframework.ai.vectorstore.pgvector.PgVectorStore;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.jdbc.DataSourceBuilder;
 import org.springframework.context.annotation.Bean;
@@ -22,7 +21,6 @@ import org.springframework.jdbc.core.JdbcTemplate;
  */
 @Configuration
 @ConditionalOnProperty(prefix = "agent.rag", name = "enabled", havingValue = "true")
-@ConditionalOnBean(EmbeddingModel.class)
 public class AgentRagConfig {
 
     @Bean
@@ -53,6 +51,7 @@ public class AgentRagConfig {
             EmbeddingModel embeddingModel,
             @Value("${agent.rag.schema-name:public}") String schemaName,
             @Value("${agent.rag.table-name:agent_knowledge_vector}") String tableName,
+            @Value("${agent.rag.dimensions:1024}") int dimensions,
             @Value("${agent.rag.initialize-schema:true}") boolean initializeSchema) {
         // schema/table 会拼入 SQL 标识符，限制格式可防止错误配置造成 SQL 注入。
         validateIdentifier(schemaName, "schema-name");
@@ -62,6 +61,8 @@ public class AgentRagConfig {
                 .idType(PgVectorStore.PgIdType.TEXT)
                 .schemaName(schemaName)
                 .vectorTableName(tableName)
+                // 必须与 SiliconFlow Embedding 的输出维度一致。
+                .dimensions(dimensions)
                 .distanceType(PgVectorStore.PgDistanceType.COSINE_DISTANCE)
                 // 首次启动时创建 vector/hstore 扩展、表与索引；生产可交给 DBA 后关闭。
                 .initializeSchema(initializeSchema)

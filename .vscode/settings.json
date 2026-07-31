@@ -1,5 +1,7 @@
 {
     "java.compile.nullAnalysis.mode": "automatic",
+    "yaml.schemaStore.enable": false,
+    "yaml.validate": true,
     "java.jdt.ls.java.home": "/Library/Java/JavaVirtualMachines/jdk-17.jdk/Contents/Home",
     "java.configuration.runtimes": [
         {

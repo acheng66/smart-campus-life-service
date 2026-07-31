@@ -11,7 +11,7 @@ import org.springframework.ai.document.Document;
 import org.springframework.ai.vectorstore.SearchRequest;
 import org.springframework.ai.vectorstore.VectorStore;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.event.ApplicationReadyEvent;
 import org.springframework.context.event.EventListener;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -36,7 +36,7 @@ import lombok.extern.slf4j.Slf4j;
  */
 @Slf4j
 @Service
-@ConditionalOnBean(name = "campusAgentVectorStore")
+@ConditionalOnProperty(prefix = "agent.rag", name = "enabled", havingValue = "true")
 public class AgentKnowledgeService {
     @Resource(name = "campusAgentVectorStore")
     private VectorStore vectorStore;
@@ -61,7 +61,13 @@ public class AgentKnowledgeService {
     @EventListener(ApplicationReadyEvent.class)
     public void initializeKnowledgeOnStartup() {
         if (rebuildOnStartup) {
-            rebuildKnowledge();
+            try {
+                rebuildKnowledge();
+            } catch (Exception e) {
+                // RAG 属于增强能力。Embedding 服务或 pgvector 暂时不可用时只关闭知识检索，
+                // 不能让登录、商铺、优惠券等核心业务跟着退出。
+                log.error("Agent RAG 启动重建失败，本次运行将降级为实时工具查询；请检查 Embedding Key 和 pgvector", e);
+            }
         }
     }
 
@@ -109,8 +115,10 @@ public class AgentKnowledgeService {
             List<Document> documents = vectorStore.similaritySearch(SearchRequest.builder().query(question).topK(3)
                     .similarityThreshold(0.55D).build());
             if (documents == null || documents.isEmpty()) {
+                log.debug("Agent RAG 检索完成，命中文档数=0");
                 return "无";
             }
+            log.debug("Agent RAG 检索完成，命中文档数={}", documents.size());
             return documents.stream().map(document -> StrUtil.subWithLength(document.getText(), 0, 360))
                     .collect(Collectors.joining("\n---\n"));
         } catch (Exception e) {
