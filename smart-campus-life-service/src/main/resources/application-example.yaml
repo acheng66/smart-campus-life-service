@@ -44,7 +44,7 @@ spring:
     openai:
       # DeepSeek 使用 OpenAI 兼容协议，因此仍复用 Spring AI OpenAI Starter。
       base-url: ${DEEPSEEK_BASE_URL:https://api.deepseek.com}
-      api-key: sk-c99997a0c709469dad3b9f11369823a7
+      api-key: ${DEEPSEEK_API_KEY:}
       chat:
         options:
           model: ${DEEPSEEK_MODEL:deepseek-v4-flash}
@@ -53,7 +53,7 @@ spring:
       embedding:
         # cloud.siliconflow.cn 创建的 Key 对应 api.siliconflow.cn。
         base-url: ${SILICONFLOW_BASE_URL:https://api.siliconflow.cn}
-        api-key: sk-gutcuxglcpvkeifryudhmteapqbigcnrhijguucvxxtrrajm
+        api-key: ${SILICONFLOW_API_KEY:}
         options:
           model: ${SILICONFLOW_EMBEDDING_MODEL:Qwen/Qwen3-Embedding-0.6B}
           dimensions: ${SILICONFLOW_EMBEDDING_DIMENSIONS:1024}
@@ -69,6 +69,12 @@ agent:
   memory:
     short-ttl-hours: ${AGENT_SHORT_MEMORY_TTL_HOURS:24}
     max-messages: ${AGENT_SHORT_MEMORY_MAX_MESSAGES:12}
+  evaluation:
+    # 自动评测会真实调用模型和业务只读工具，默认关闭；仅在受控环境显式启用。
+    enabled: ${AGENT_EVALUATION_ENABLED:false}
+    dataset: ${AGENT_EVALUATION_DATASET:classpath:agent-evaluation/golden-dataset.json}
+    user-id: ${AGENT_EVALUATION_USER_ID:-9000001}
+    max-trials-per-run: ${AGENT_EVALUATION_MAX_TRIALS:20}
   rag:
     enabled: ${AGENT_RAG_ENABLED:true}
     # 必须与 SiliconFlow Embedding 输出维度保持一致。
