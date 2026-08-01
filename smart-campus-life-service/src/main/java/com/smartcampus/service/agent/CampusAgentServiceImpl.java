@@ -45,6 +45,9 @@ import com.smartcampus.service.shop.IShopTypeService;
 import com.smartcampus.service.voucher.IVoucherOrderService;
 import com.smartcampus.service.voucher.IVoucherService;
 import com.smartcampus.service.agent.CampusAgentTools;
+import com.smartcampus.service.agent.workflow.AgentWorkflowExecution;
+import com.smartcampus.service.agent.workflow.AgentWorkflowService;
+import com.smartcampus.service.agent.workflow.AgentWorkflowState;
 import com.smartcampus.utils.redis.RedisConstants;
 import com.smartcampus.utils.auth.UserHolder;
 
@@ -98,6 +101,8 @@ public class CampusAgentServiceImpl implements ICampusAgentService {
     private AgentLongTermMemoryService longTermMemoryService;
     @Resource
     private AgentIntentResolver agentIntentResolver;
+    @Resource
+    private AgentWorkflowService agentWorkflowService;
     /**
      * RAG 未启用时该 Bean 不存在；对话仍可工作，只是不注入向量检索文本。
      */
@@ -139,16 +144,28 @@ public class CampusAgentServiceImpl implements ICampusAgentService {
         AgentChatResponse response = new AgentChatResponse();
         response.setTraceId(traceId);
         response.setConversationId(conversationId);
+        AgentWorkflowExecution workflow = agentWorkflowService.start(
+                traceId, user.getId(), conversationId, message);
         try {
+            AgentIntent intent = agentIntentResolver.resolve(message);
+            workflow.setIntent(intent.name());
+            agentWorkflowService.transition(workflow, AgentWorkflowState.INTENT_RESOLVED,
+                    "INTENT_RESOLVED", "主要意图=" + intent.name());
             if (campusAgentChatClient == null) {
-                fillDeterministicResponse(message, request.getX(), request.getY(), user.getId(), response, traceId);
+                agentWorkflowService.transition(workflow, AgentWorkflowState.DETERMINISTIC_RUNNING,
+                        "DETERMINISTIC_SELECTED", "未启用 ChatClient，使用基础查询链路");
+                fillDeterministicResponse(message, request.getX(), request.getY(), user.getId(), response, traceId, intent);
             } else {
-                fillAiPlannedResponse(message, request.getX(), request.getY(), user.getId(), conversationId, response, traceId);
+                fillAiPlannedResponse(message, request.getX(), request.getY(), user.getId(), conversationId,
+                        response, traceId, intent, workflow);
             }
+            agentWorkflowService.transition(workflow, AgentWorkflowState.RESPONSE_VALIDATED,
+                    "RESPONSE_VALIDATED", responseSummary(response));
             // 记忆只是增强能力，不能因为 Redis 中历史数据类型异常、连接短暂波动等原因，
             // 把已经完成的实时业务查询变成“查询失败”。
             persistMemorySafely(user.getId(), conversationId, message, response.getAnswer(), traceId);
             completeTrace(response, startedAt);
+            agentWorkflowService.complete(workflow, response.getExecutionTrace());
             return Result.ok(response);
         } catch (Exception e) {
             log.error("校园助手工具调用失败, traceId={}", traceId, e);
@@ -157,16 +174,22 @@ public class CampusAgentServiceImpl implements ICampusAgentService {
             // 只有数据库/Redis 的基础查询本身也失败时，才向用户返回失败。
             try {
                 AgentToolCallContext.clear();
-                fillDeterministicResponse(message, request.getX(), request.getY(), user.getId(), response, traceId);
+                beginFinalFallback(workflow, e);
+                AgentIntent intent = agentIntentResolver.resolve(message);
+                fillDeterministicResponse(message, request.getX(), request.getY(), user.getId(), response, traceId, intent);
                 response.getExecutionTrace().setMode("FINAL_FALLBACK");
                 response.getExecutionTrace().setFallback(true);
+                agentWorkflowService.transition(workflow, AgentWorkflowState.RESPONSE_VALIDATED,
+                        "FALLBACK_RESPONSE_VALIDATED", responseSummary(response));
                 persistMemorySafely(user.getId(), conversationId, message, response.getAnswer(), traceId);
                 audit(user.getId(), traceId, "finalFallback", "success");
                 completeTrace(response, startedAt);
+                agentWorkflowService.complete(workflow, response.getExecutionTrace());
                 return Result.ok(response);
             } catch (Exception fallbackError) {
                 log.error("校园助手最终降级查询仍失败, traceId={}", traceId, fallbackError);
                 audit(user.getId(), traceId, "finalFallback", "failed");
+                agentWorkflowService.fail(workflow, fallbackError, "ALL_PATHS_FAILED");
                 return Result.fail("暂时无法查询，请稍后再试（追踪编号：" + traceId + "）");
             }
         }
@@ -227,6 +250,31 @@ public class CampusAgentServiceImpl implements ICampusAgentService {
         return result;
     }
 
+    /** 查询当前用户自己的工作流；不存在和越权使用同一响应，避免 traceId 枚举。 */
+    @Override
+    public Result queryWorkflow(String traceId) {
+        UserDTO user = UserHolder.getUser();
+        if (user == null) {
+            return Result.fail("请先登录后再查询执行记录");
+        }
+        if (StrUtil.isBlank(traceId) || !traceId.matches("[a-fA-F0-9]{32}")) {
+            return Result.fail("追踪编号格式不正确");
+        }
+        AgentWorkflowExecution execution = agentWorkflowService.findOwned(traceId, user.getId());
+        return execution == null ? Result.fail("执行记录不存在或已过期") : Result.ok(execution);
+    }
+
+    /** 最近记录同样按 userId 隔离，调用方不能通过请求参数指定其他用户。 */
+    @Override
+    public Result queryRecentWorkflows(Integer limit) {
+        UserDTO user = UserHolder.getUser();
+        if (user == null) {
+            return Result.fail("请先登录后再查询执行记录");
+        }
+        int safeLimit = limit == null ? 10 : Math.max(1, Math.min(limit, 50));
+        return Result.ok(agentWorkflowService.recentOwned(user.getId(), safeLimit));
+    }
+
     /**
      * 大模型模式：将用户问题、短期记忆、长期偏好和可选 RAG 文本交给 ChatClient。
      *
@@ -234,8 +282,7 @@ public class CampusAgentServiceImpl implements ICampusAgentService {
      * 发生任何模型或工具异常时立即回退到确定性路径，避免 AI 服务不可用影响基本查询。</p>
      */
     private void fillAiPlannedResponse(String message, Double x, Double y, Long userId, String conversationId,
-            AgentChatResponse response, String traceId) {
-        AgentIntent intent = agentIntentResolver.resolve(message);
+            AgentChatResponse response, String traceId, AgentIntent intent, AgentWorkflowExecution workflow) {
         AgentExecutionTrace executionTrace = new AgentExecutionTrace();
         executionTrace.setMode("AI");
         executionTrace.setIntent(intent.name());
@@ -243,6 +290,8 @@ public class CampusAgentServiceImpl implements ICampusAgentService {
         response.setExecutionTrace(executionTrace);
         AgentToolCallContext.begin(userId, x, y, intent);
         try {
+            agentWorkflowService.transition(workflow, AgentWorkflowState.CONTEXT_LOADING,
+                    "CONTEXT_LOADING", "加载短期记忆、长期偏好与可选 RAG 知识");
             String shortMemory = conversationMemoryService.recentContext(userId, conversationId);
             String longMemory = longTermMemoryService.profilePrompt(userId);
             // RAG 只补充规则/介绍文本，Prompt 明确要求实时库存和资格必须再次调用工具。
@@ -251,6 +300,10 @@ public class CampusAgentServiceImpl implements ICampusAgentService {
                     : agentKnowledgeService.retrieveWithMetadata(message);
             String knowledge = retrieval.getContent();
             executionTrace.setRagHitCount(retrieval.getHitCount());
+            agentWorkflowService.transition(workflow, AgentWorkflowState.CONTEXT_READY,
+                    "CONTEXT_READY", "RAG 命中=" + retrieval.getHitCount());
+            agentWorkflowService.transition(workflow, AgentWorkflowState.MODEL_PLANNING,
+                    "MODEL_PLANNING", "ChatClient 开始规划受控工具调用");
             String answer = campusAgentChatClient.prompt()
                     .user("当前用户问题：" + message + "\n"
                             + "服务端判定的主要意图：" + intent.name() + "。该意图是最终卡片类型的安全边界。\n"
@@ -277,11 +330,16 @@ public class CampusAgentServiceImpl implements ICampusAgentService {
             executionTrace.setToolCalls(AgentToolCallContext.toolCalls());
             executionTrace.setCandidateShopTitles(AgentToolCallContext.candidateShopTitles());
             executionTrace.setPresentationType(AgentToolCallContext.presentationType().name());
+            agentWorkflowService.captureTrace(workflow, executionTrace);
+            agentWorkflowService.transition(workflow, AgentWorkflowState.TOOLS_EXECUTED,
+                    "MODEL_RETURNED", "实际工具调用=" + executionTrace.getToolCalls().size());
             audit(userId, traceId, "ChatClientPlan", "success");
         } catch (Exception e) {
             List<String> attemptedToolCalls = AgentToolCallContext.toolCalls();
             log.warn("ChatClient 规划失败，已降级为确定性查询, traceId={}", traceId, e);
-            fillDeterministicResponse(message, x, y, userId, response, traceId);
+            agentWorkflowService.transition(workflow, AgentWorkflowState.DETERMINISTIC_RUNNING,
+                    "MODEL_FALLBACK", "模型或工具链异常=" + e.getClass().getSimpleName());
+            fillDeterministicResponse(message, x, y, userId, response, traceId, intent);
             AgentExecutionTrace fallbackTrace = response.getExecutionTrace();
             List<String> allToolCalls = new ArrayList<>(attemptedToolCalls);
             allToolCalls.addAll(fallbackTrace.getToolCalls());
@@ -326,8 +384,7 @@ public class CampusAgentServiceImpl implements ICampusAgentService {
      * 通过有限关键词将问题路由到已有查询方法；能力较弱但完全不依赖外部模型，也不会产生模型费用。
      */
     private void fillDeterministicResponse(String message, Double x, Double y, Long userId,
-            AgentChatResponse response, String traceId) {
-        AgentIntent intent = agentIntentResolver.resolve(message);
+            AgentChatResponse response, String traceId, AgentIntent intent) {
         AgentExecutionTrace executionTrace = new AgentExecutionTrace();
         executionTrace.setMode("DETERMINISTIC");
         executionTrace.setIntent(intent.name());
@@ -371,6 +428,22 @@ public class CampusAgentServiceImpl implements ICampusAgentService {
             response.setExecutionTrace(new AgentExecutionTrace());
         }
         response.getExecutionTrace().setDurationMs(TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedAt));
+    }
+
+    /** 外层兜底可能接手任意非终态；已经处于确定性查询时无需重复推进状态。 */
+    private void beginFinalFallback(AgentWorkflowExecution workflow, Exception cause) {
+        if (workflow.getState() != AgentWorkflowState.DETERMINISTIC_RUNNING) {
+            agentWorkflowService.transition(workflow, AgentWorkflowState.DETERMINISTIC_RUNNING,
+                    "FINAL_FALLBACK", "主链路异常=" + cause.getClass().getSimpleName());
+        }
+    }
+
+    /** 工作流只记录响应结构摘要，不复制自然语言答案和业务卡片明细。 */
+    private String responseSummary(AgentChatResponse response) {
+        int cardCount = response.getCards() == null ? 0 : response.getCards().size();
+        AgentExecutionTrace trace = response.getExecutionTrace();
+        String presentation = trace == null ? AgentPresentationType.NONE.name() : trace.getPresentationType();
+        return "展示类型=" + presentation + ", 卡片数=" + cardCount;
     }
 
     /**
@@ -622,7 +695,8 @@ public class CampusAgentServiceImpl implements ICampusAgentService {
     /**
      * 历史“先查后润色”实现。
      *
-     * <p>当前主流程使用 {@link #fillAiPlannedResponse(String, Double, Double, Long, String, AgentChatResponse, String)}
+     * <p>当前主流程使用 {@link #fillAiPlannedResponse(String, Double, Double, Long, String,
+     * AgentChatResponse, String, AgentIntent, AgentWorkflowExecution)}
      * 让模型自主选择工具，本方法暂未被调用，保留用于兼容或后续重构参考。即便未来启用，卡片仍应由应用侧构建。</p>
      */
     private void enrichAnswerWithChatClient(String userMessage, AgentChatResponse response, Long userId, String traceId) {

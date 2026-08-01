@@ -66,6 +66,13 @@ cache:
 agent:
   ai:
     enabled: ${AGENT_AI_ENABLED:false}
+  workflow:
+    # 每个关键阶段写入 Redis；终态记录和用户最近执行索引保留 7 天。
+    ttl-days: ${AGENT_WORKFLOW_TTL_DAYS:7}
+    recent-limit: ${AGENT_WORKFLOW_RECENT_LIMIT:50}
+    # 同步请求无法从模型调用中点安全续跑，超时后标记失败并保留故障阶段。
+    stale-minutes: ${AGENT_WORKFLOW_STALE_MINUTES:30}
+    recovery-interval-ms: ${AGENT_WORKFLOW_RECOVERY_INTERVAL_MS:60000}
   memory:
     short-ttl-hours: ${AGENT_SHORT_MEMORY_TTL_HOURS:24}
     max-messages: ${AGENT_SHORT_MEMORY_MAX_MESSAGES:12}

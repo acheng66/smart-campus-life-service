@@ -72,6 +72,23 @@ utils/
 等最终展示工具才会生成卡片。服务端按意图限制唯一允许的展示类型，即使模型进行了额外查询，
 “查店铺优惠券”也不能被错误的店铺展示调用覆盖成店铺卡片。
 
+每次 `/agent/chat` 还会创建一条显式工作流，并在关键阶段持久化到 Redis：
+
+```text
+CREATED → INTENT_RESOLVED
+        → CONTEXT_LOADING → CONTEXT_READY → MODEL_PLANNING → TOOLS_EXECUTED
+        → RESPONSE_VALIDATED → COMPLETED
+
+无模型或模型异常：任一规划阶段 → DETERMINISTIC_RUNNING → RESPONSE_VALIDATED
+模型与兜底均失败：任一非终态 → FAILED
+```
+
+工作流记录包含意图、执行模式、实际工具名、RAG 命中数、展示类型、耗时和完整状态时间线，
+但不保存系统 Prompt、密钥、RAG 原文或工具完整返回值。记录和当前用户索引默认保留 7 天；
+恢复任务每分钟检查活动集合，把 30 分钟未推进的进程中断记录标记为 `FAILED`，不会盲目重放工具。
+当前登录用户可调用 `GET /agent/workflows/{traceId}` 或 `GET /agent/workflows?limit=10` 排查自己的请求，
+服务端始终用 `UserHolder` 校验归属，不能查询其他用户的工作流。
+
 Agent 记忆分为两层：Redis 短期会话记忆保留同一会话最近 12 条消息、默认 24 小时过期；
 Redis 长期偏好记忆仅保存用户明确表达的忌口、偏好和预算描述，保留 180 天。它们只用于
 理解上下文，不能改变库存、资格或权限判断。
@@ -180,7 +197,7 @@ Content-Type: application/json
 可验证预期追加为回归用例，再运行评测，避免同类问题重新出现。核心评分器单测可单独执行：
 
 ```bash
-mvn -Dtest=AgentRuleGraderTest,AgentIntentAndPresentationTest test
+mvn -Dtest=AgentRuleGraderTest,AgentIntentAndPresentationTest,AgentWorkflowStateMachineTest test
 ```
 
 ## 本地运行

@@ -16,4 +16,10 @@ public interface ICampusAgentService {
     Result chat(AgentChatRequest request);
 
     Result confirmAction(AgentActionConfirmRequest request);
+
+    /** 查询当前登录用户自己的单次持久化工作流。 */
+    Result queryWorkflow(String traceId);
+
+    /** 查询当前登录用户最近的持久化工作流。 */
+    Result queryRecentWorkflows(Integer limit);
 }

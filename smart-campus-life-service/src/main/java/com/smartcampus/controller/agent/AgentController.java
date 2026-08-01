@@ -3,6 +3,9 @@ package com.smartcampus.controller.agent;
 import jakarta.annotation.Resource;
 
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
@@ -38,5 +41,17 @@ public class AgentController {
     @PostMapping("/actions/confirm")
     public Result confirmAction(@RequestBody AgentActionConfirmRequest request) {
         return campusAgentService.confirmAction(request);
+    }
+
+    /** 查询当前用户某次请求的完整状态时间线；不能读取其他用户的 traceId。 */
+    @GetMapping("/workflows/{traceId}")
+    public Result queryWorkflow(@PathVariable String traceId) {
+        return campusAgentService.queryWorkflow(traceId);
+    }
+
+    /** 查询当前用户最近的工作流，默认 10 条，最大值由服务端限制。 */
+    @GetMapping("/workflows")
+    public Result queryRecentWorkflows(@RequestParam(defaultValue = "10") Integer limit) {
+        return campusAgentService.queryRecentWorkflows(limit);
     }
 }
