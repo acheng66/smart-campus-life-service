@@ -111,19 +111,49 @@ public class AgentKnowledgeService {
      * 检索失败时返回“无”，让对话继续使用真实工具查询，而不是因为 RAG 故障中断 Agent。
      */
     public String retrieve(String question) {
+        return retrieveWithMetadata(question).getContent();
+    }
+
+    /**
+     * 执行向量检索并同时返回可评测元数据。
+     *
+     * <p>自动评测不能通过回答文本猜测 RAG 是否工作，因此这里显式返回命中文档数。
+     * 检索异常仍按增强能力降级为 0 命中，不中断真实工具链路。</p>
+     */
+    public RetrievalResult retrieveWithMetadata(String question) {
         try {
             List<Document> documents = vectorStore.similaritySearch(SearchRequest.builder().query(question).topK(3)
                     .similarityThreshold(0.55D).build());
             if (documents == null || documents.isEmpty()) {
                 log.debug("Agent RAG 检索完成，命中文档数=0");
-                return "无";
+                return new RetrievalResult("无", 0);
             }
             log.debug("Agent RAG 检索完成，命中文档数={}", documents.size());
-            return documents.stream().map(document -> StrUtil.subWithLength(document.getText(), 0, 360))
+            String content = documents.stream().map(document -> StrUtil.subWithLength(document.getText(), 0, 360))
                     .collect(Collectors.joining("\n---\n"));
+            return new RetrievalResult(content, documents.size());
         } catch (Exception e) {
             log.warn("Agent RAG 检索失败，将忽略知识库上下文", e);
-            return "无";
+            return new RetrievalResult("无", 0);
+        }
+    }
+
+    /** RAG 注入文本及其真实命中数量，避免评测依赖日志解析。 */
+    public static final class RetrievalResult {
+        private final String content;
+        private final int hitCount;
+
+        public RetrievalResult(String content, int hitCount) {
+            this.content = content;
+            this.hitCount = hitCount;
+        }
+
+        public String getContent() {
+            return content;
+        }
+
+        public int getHitCount() {
+            return hitCount;
         }
     }
 

@@ -65,12 +65,19 @@ utils/
 商家优惠券和资格校验；模型没有数据库连接、没有用户 ID 入参，也不能调用领券或下单。
 工具返回的业务卡片、操作凭证和最终写操作均由服务端生成和校验。
 
+每轮请求在进入模型前会绑定一个主要意图：
+`SHOP_RECOMMENDATION`、`SHOP_VOUCHER_QUERY`、`MY_VOUCHER_QUERY`、
+`ELIGIBILITY_CHECK` 或 `GENERAL`。查询工具只返回并暂存真实事实；
+`selectShopRecommendations`、`presentVoucherResults`、`presentMyVouchers`
+等最终展示工具才会生成卡片。服务端按意图限制唯一允许的展示类型，即使模型进行了额外查询，
+“查店铺优惠券”也不能被错误的店铺展示调用覆盖成店铺卡片。
+
 Agent 记忆分为两层：Redis 短期会话记忆保留同一会话最近 12 条消息、默认 24 小时过期；
 Redis 长期偏好记忆仅保存用户明确表达的忌口、偏好和预算描述，保留 180 天。它们只用于
 理解上下文，不能改变库存、资格或权限判断。
 
 可选 RAG 使用独立的 **PostgreSQL + pgvector**。它将商户介绍、优惠券规则和活动文案向量化，
-并持久化在 `public.agent_knowledge_vector`；业务 MySQL 仍只保存商户、优惠券、订单等实时数据。
+并持久化在 `public.agent_knowledge_vector_1024`；业务 MySQL 仍只保存商户、优惠券、订单等实时数据。
 启动时和每日凌晨会从业务库完整重建 RAG 文档，因此下架或删除的商户、券不会遗留在检索结果中。
 RAG 仅补充文本知识；实时库存、领取资格和活动状态必须调用业务工具。
 
@@ -87,8 +94,8 @@ export DEEPSEEK_MODEL='deepseek-v4-flash'
 # 启用真实 RAG 时还需要独立 Embedding 模型；不要把请求发到 DeepSeek 聊天接口。
 export AGENT_RAG_ENABLED=true
 export SPRING_AI_MODEL_EMBEDDING=openai
-export EMBEDDING_API_KEY='your-embedding-api-key'
-export EMBEDDING_MODEL='text-embedding-3-small'
+export SILICONFLOW_API_KEY='your-siliconflow-api-key'
+export SILICONFLOW_EMBEDDING_MODEL='Qwen/Qwen3-Embedding-0.6B'
 ```
 
 启用 RAG 前先启动独立的 pgvector 数据库（不会修改现有 MySQL）：
@@ -105,6 +112,76 @@ docker compose -f docker-compose.pgvector.yml up -d
 
 如果模型服务暂时不可用，校园助手会自动降级为已校验的业务查询结果；不会跳过权限、
 库存、一人一券或用户确认。
+
+### Agent 自动评测
+
+项目内置第一优先级的离线回归评测体系，默认关闭。它不只比较回答文字，还会读取服务端内部执行轨迹，
+检查模型是否真正参与、工具选择与调用顺序、RAG 命中、回答与业务卡片一致性、重复卡片、Markdown
+污染、危险写操作承诺和操作 Token 完整性。断言分为 `ERROR` 与 `WARNING`：
+业务错误、安全问题和卡片不一致会导致用例失败；可避免的重复只读查询只计入警告，不影响业务通过率。
+
+```text
+Golden Dataset
+→ 真实 ICampusAgentService.chat 链路
+→ ChatClient / Tools / pgvector / 降级策略
+→ 确定性 Rule Grader
+→ 通过率、延迟、工具次数及逐条失败原因
+```
+
+启用本地评测入口：
+
+```bash
+export AGENT_EVALUATION_ENABLED=true
+```
+
+启动应用并使用管理员 Token 调用：
+
+```http
+GET  /admin/agent/evaluations/cases
+POST /admin/agent/evaluations/run
+Authorization: 管理员登录 Token
+Content-Type: application/json
+
+{
+  "caseIds": [],
+  "levels": ["SMOKE"],
+  "categories": [],
+  "tags": [],
+  "repeat": 1
+}
+```
+
+当前 Golden Dataset 包含 30 条用例：8 条 `SMOKE`、14 条 `REGRESSION`、8 条 `SECURITY`。
+`caseIds` 具有最高优先级；没有指定 ID 和筛选条件时默认只运行 8 条 Smoke，避免意外产生大量模型费用。
+也可以通过 `levels`、`categories` 或 `tags` 选择用例，多个标签按命中任一标签处理。例如只跑安全用例：
+
+```json
+{
+  "levels": ["SECURITY"],
+  "repeat": 1
+}
+```
+
+只检查 RAG：
+
+```json
+{
+  "categories": ["RAG"],
+  "repeat": 1
+}
+```
+
+默认单次最多 20 个 trial；评测使用隔离的负数虚拟用户，
+不会调用 `/agent/actions/confirm`，因此不会真实领券或下单。它仍会真实调用聊天模型、Embedding
+和只读业务查询，可能产生外部 API 费用，生产环境应保持关闭。
+
+默认 Golden Dataset 位于
+`src/main/resources/agent-evaluation/golden-dataset.json`。线上发现一次错误回答后，应把问题和
+可验证预期追加为回归用例，再运行评测，避免同类问题重新出现。核心评分器单测可单独执行：
+
+```bash
+mvn -Dtest=AgentRuleGraderTest,AgentIntentAndPresentationTest test
+```
 
 ## 本地运行
 

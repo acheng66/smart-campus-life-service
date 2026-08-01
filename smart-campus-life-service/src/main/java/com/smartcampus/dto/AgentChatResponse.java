@@ -2,6 +2,8 @@ package com.smartcampus.dto;
 
 import java.util.List;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
+
 import lombok.Data;
 
 /** 受控业务 Agent 的回复：自然语言说明 + 可验证的业务卡片。 */
@@ -15,4 +17,11 @@ public class AgentChatResponse {
     private String answer;
     /** 服务端工具生成的可信业务卡片；可为空但不应由模型文本替代。 */
     private List<AgentCard> cards;
+    /**
+     * 自动评测使用的内部执行轨迹。
+     *
+     * <p>禁止返回普通前端，避免暴露内部工具编排和降级细节；评测服务直接读取 Java 对象。</p>
+     */
+    @JsonIgnore
+    private AgentExecutionTrace executionTrace;
 }

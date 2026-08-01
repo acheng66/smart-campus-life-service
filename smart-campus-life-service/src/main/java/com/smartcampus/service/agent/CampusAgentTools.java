@@ -7,7 +7,6 @@ import java.util.Collections;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 import java.util.stream.Collectors;
 
 import jakarta.annotation.Resource;
@@ -24,7 +23,6 @@ import com.smartcampus.dto.UserDTO;
 import com.smartcampus.entity.SeckillVoucher;
 import com.smartcampus.entity.Shop;
 import com.smartcampus.entity.Voucher;
-import com.smartcampus.entity.VoucherOrder;
 import com.smartcampus.service.shop.IShopService;
 import com.smartcampus.service.voucher.ISeckillVoucherService;
 import com.smartcampus.service.voucher.IVoucherOrderService;
@@ -38,9 +36,8 @@ import cn.hutool.json.JSONUtil;
 /**
  * ChatClient 可调用的受控工具。
  *
- * <p>每个工具只读真实业务状态；同时把可信卡片写入 {@link AgentToolCallContext}，
- * 因此前端不会使用模型编造的 ID 或写操作参数。工具的 String 返回值供模型理解，
- * 卡片则由服务端直接交给前端，两者职责分离。</p>
+ * <p>查询工具只登记真实业务事实，最终展示工具才生成可信卡片。展示 ID 必须来自本轮查询结果，
+ * 且卡片类型必须符合服务端意图，因此模型可以自主比较数据，但不能伪造 ID 或用错误工具污染前端。</p>
  */
 @Component
 public class CampusAgentTools {
@@ -68,6 +65,7 @@ public class CampusAgentTools {
      */
     @Tool(description = "按名称、区域或地址关键词搜索校园店铺候选。用户询问附近餐饮、咖啡、推荐店铺时优先调用；系统会结合当前会话位置、评分和上架优惠券排序。该工具不会展示卡片，比较候选后必须再调用 selectShopRecommendations 选择最终要推荐的一到三家店铺。")
     public String searchShops(@ToolParam(description = "用户需求中的店铺名、区域、餐饮或咖啡等关键词；没有明确关键词时传空字符串", required = false) String keyword) {
+        AgentToolCallContext.recordTool("searchShops");
         String normalized = keyword == null ? "" : keyword.trim().toLowerCase();
         List<Shop> shops = shopService.list().stream()
                 .filter(shop -> normalized.isEmpty() || containsShop(shop, normalized))
@@ -87,7 +85,8 @@ public class CampusAgentTools {
                 .thenComparing(shop -> distance(x, y, shop)));
         List<Shop> result = shops.stream().limit(5).collect(Collectors.toList());
         if (context != null) {
-            context.setCandidateShopIds(result.stream().map(Shop::getId).collect(Collectors.toList()));
+            context.setCandidateShops(result.stream().collect(Collectors.toMap(Shop::getId, Shop::getName,
+                    (first, ignored) -> first, java.util.LinkedHashMap::new)));
         }
         return JSONUtil.toJsonStr(result.stream().map(this::shopView).collect(Collectors.toList()));
     }
@@ -101,6 +100,7 @@ public class CampusAgentTools {
      */
     @Tool(description = "展示最终推荐的店铺卡片。必须传入 searchShops 返回候选中的 shopIds，按回答里提及店铺的顺序传入；一次最多 3 家且只调用一次。不要传入回答里未提及的店铺。")
     public String selectShopRecommendations(@ToolParam(description = "最终回答中会明确提及的店铺 ID 列表，必须来自本轮 searchShops 返回结果，最多 3 个", required = true) List<Long> shopIds) {
+        AgentToolCallContext.recordTool("selectShopRecommendations");
         AgentToolCallContext.Context context = AgentToolCallContext.current();
         if (shopIds == null || shopIds.isEmpty()) {
             return "缺少店铺 ID，无法展示推荐。";
@@ -110,8 +110,8 @@ public class CampusAgentTools {
         if (selectedIds.isEmpty() || context == null || selectedIds.stream().anyMatch(id -> !context.isCandidateShop(id))) {
             return "只能展示本轮搜索返回的店铺候选。";
         }
-        if (!context.selectRecommendations(selectedIds)) {
-            return "本轮已经完成最终店铺选择，不能重复展示推荐卡片。";
+        if (!context.beginPresentation(AgentPresentationType.SHOP)) {
+            return "当前请求不是店铺推荐，或本轮已经确定其他最终展示类型，不能展示店铺卡片。";
         }
         List<Shop> shops = shopService.listByIds(selectedIds);
         Map<Long, Shop> shopMap = shops.stream().collect(Collectors.toMap(Shop::getId, shop -> shop));
@@ -131,44 +131,109 @@ public class CampusAgentTools {
     }
 
     /**
-     * 查询当前登录用户已领取的券。
+     * 查询当前登录用户已领取的券事实。
      *
      * <p>用户 ID 强制从 UserHolder 读取，模型没有 userId 参数，因此不能借工具越权查询其他人的券。</p>
      */
-    @Tool(description = "查询当前已登录用户已领取的优惠券和有效期。只能查询当前会话用户，不能查询其他用户。")
+    @Tool(description = "查询当前已登录用户已领取的优惠券和有效期，只返回查询事实，不展示卡片。只能查询当前会话用户，不能查询其他用户；需要展示时再调用 presentMyVouchers。")
     public String queryMyVouchers() {
+        AgentToolCallContext.recordTool("queryMyVouchers");
         UserDTO user = UserHolder.getUser();
         if (user == null) {
             return "当前用户未登录，不能查询优惠券。";
         }
         Result result = voucherOrderService.queryMyVouchers();
         Object data = result.getData();
+        List<MyVoucherDTO> vouchers = new ArrayList<>();
         if (data instanceof List) {
             for (Object item : (List<?>) data) {
                 if (item instanceof MyVoucherDTO) {
-                    addMyVoucherCard((MyVoucherDTO) item);
+                    vouchers.add((MyVoucherDTO) item);
                 }
             }
         }
-        return JSONUtil.toJsonStr(data == null ? Collections.emptyList() : data);
+        AgentToolCallContext.Context context = AgentToolCallContext.current();
+        if (context != null) {
+            context.registerQueriedMyVouchers(vouchers);
+        }
+        return JSONUtil.toJsonStr(vouchers);
+    }
+
+    /**
+     * 将 queryMyVouchers 返回的指定券生成“我的优惠券”卡片。
+     * 模型只能选择本轮当前用户查询结果中的 voucherId，不能借展示参数查询其他用户。
+     */
+    @Tool(description = "展示当前用户已领取的优惠券卡片。只能传入本轮 queryMyVouchers 返回的 voucherIds，最多 6 张；没有已领取券时不要调用。")
+    public String presentMyVouchers(
+            @ToolParam(description = "最终回答需要展示的已领取优惠券 ID，必须来自本轮 queryMyVouchers", required = true) List<Long> voucherIds) {
+        AgentToolCallContext.recordTool("presentMyVouchers");
+        AgentToolCallContext.Context context = AgentToolCallContext.current();
+        List<Long> selectedIds = distinctIds(voucherIds, 6);
+        if (context == null || selectedIds.isEmpty()
+                || selectedIds.stream().anyMatch(id -> context.getQueriedMyVoucher(id) == null)) {
+            return "只能展示本轮 queryMyVouchers 返回的优惠券。";
+        }
+        if (!context.beginPresentation(AgentPresentationType.MY_VOUCHER)) {
+            return "当前请求不是查询我的优惠券，或本轮已经确定其他最终展示类型。";
+        }
+        List<Map<String, Object>> result = new ArrayList<>();
+        for (Long voucherId : selectedIds) {
+            MyVoucherDTO voucher = context.getQueriedMyVoucher(voucherId);
+            addMyVoucherCard(voucher);
+            Map<String, Object> item = new java.util.LinkedHashMap<>();
+            item.put("voucherId", voucher.getVoucherId());
+            item.put("title", voucher.getTitle());
+            item.put("shopName", voucher.getShopName());
+            result.add(item);
+        }
+        return JSONUtil.toJsonStr(result);
     }
 
     /**
      * 查询指定商户的上架优惠券。
      *
-     * <p>普通券读取数据库状态；秒杀券额外读取 Redis 预扣减后的库存。该方法不写库，
-     * 仅在可领取时为卡片签发一次性确认 Token。</p>
+     * <p>普通券读取数据库状态；秒杀券额外读取 Redis 预扣减后的库存。该方法只登记事实，
+     * 不生成卡片、不签发确认 Token；需要展示时再调用 {@link #presentVoucherResults(List)}。</p>
      */
-    @Tool(description = "查询指定店铺当前上架优惠券、金额、使用规则、秒杀时间和实时库存。只能查询，不会领取优惠券。若用户想领券，页面必须由用户点击确认领取。")
+    @Tool(description = "查询指定店铺当前上架优惠券、金额、使用规则、秒杀时间和实时库存，只返回查询事实，不展示卡片。需要展示查询结果时再调用 presentVoucherResults。")
     public String queryShopVouchers(@ToolParam(description = "店铺 ID，应优先来自 searchShops 的返回结果", required = true) Long shopId) {
+        AgentToolCallContext.recordTool("queryShopVouchers");
         if (shopId == null) {
             return "缺少店铺 ID，无法查询店铺优惠券。";
         }
         List<Voucher> vouchers = voucherService.query().eq("shop_id", shopId).eq("status", 1).list();
-        for (Voucher voucher : vouchers) {
-            addVoucherCard(voucher);
+        AgentToolCallContext.Context context = AgentToolCallContext.current();
+        if (context != null) {
+            context.registerQueriedVouchers(vouchers);
         }
         return JSONUtil.toJsonStr(vouchers.stream().map(this::voucherView).collect(Collectors.toList()));
+    }
+
+    /**
+     * 将 queryShopVouchers 查到的指定券生成最终可领取券卡片。
+     *
+     * <p>确认 Token 只在这里签发；用于店铺比较的中间查券不会产生前端按钮或临时卡片。</p>
+     */
+    @Tool(description = "展示店铺优惠券查询结果。只能传入本轮 queryShopVouchers 返回的 voucherIds，最多 6 张；仅当用户主要目标是查看某店优惠券时调用。")
+    public String presentVoucherResults(
+            @ToolParam(description = "最终回答需要展示的优惠券 ID，必须来自本轮 queryShopVouchers", required = true) List<Long> voucherIds) {
+        AgentToolCallContext.recordTool("presentVoucherResults");
+        AgentToolCallContext.Context context = AgentToolCallContext.current();
+        List<Long> selectedIds = distinctIds(voucherIds, 6);
+        if (context == null || selectedIds.isEmpty()
+                || selectedIds.stream().anyMatch(id -> context.getQueriedVoucher(id) == null)) {
+            return "只能展示本轮 queryShopVouchers 返回的优惠券。";
+        }
+        if (!context.beginPresentation(AgentPresentationType.VOUCHER)) {
+            return "当前请求不是查询店铺优惠券，或本轮已经确定其他最终展示类型。";
+        }
+        List<Map<String, Object>> result = new ArrayList<>();
+        for (Long voucherId : selectedIds) {
+            Voucher voucher = context.getQueriedVoucher(voucherId);
+            addVoucherCard(voucher);
+            result.add(voucherView(voucher));
+        }
+        return JSONUtil.toJsonStr(result);
     }
 
     /**
@@ -178,6 +243,7 @@ public class CampusAgentTools {
      */
     @Tool(description = "校验当前登录用户是否已领取某张券，并返回券状态、秒杀活动时间和 Redis 实时库存。只读，不会执行领取。")
     public String checkVoucherEligibility(@ToolParam(description = "优惠券 ID，应来自 queryShopVouchers 返回结果", required = true) Long voucherId) {
+        AgentToolCallContext.recordTool("checkVoucherEligibility");
         UserDTO user = UserHolder.getUser();
         if (user == null) {
             return "当前用户未登录，不能校验资格。";
@@ -367,5 +433,13 @@ public class CampusAgentTools {
 
     private String defaultText(String value, String fallback) {
         return StrUtil.isBlank(value) ? fallback : value;
+    }
+
+    /** 清理模型参数中的 null、重复 ID 并限制最终卡片数量。 */
+    private List<Long> distinctIds(List<Long> ids, int limit) {
+        if (ids == null) {
+            return Collections.emptyList();
+        }
+        return ids.stream().filter(java.util.Objects::nonNull).distinct().limit(limit).collect(Collectors.toList());
     }
 }
