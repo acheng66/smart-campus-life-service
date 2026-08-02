@@ -17,6 +17,7 @@ import org.springframework.data.geo.GeoResults;
 import org.springframework.data.geo.Point;
 import org.springframework.data.redis.connection.RedisGeoCommands;
 import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionSynchronizationAdapter;
@@ -33,6 +34,7 @@ import com.smartcampus.entity.User;
 import com.smartcampus.mapper.shop.ShopMapper;
 import com.smartcampus.mapper.user.UserMapper;
 import com.smartcampus.service.shop.IShopService;
+import com.smartcampus.service.agent.rag.AgentKnowledgeChangedEvent;
 import com.smartcampus.utils.redis.RedisConstants;
 import com.smartcampus.utils.cache.ShopBloomFilter;
 import com.smartcampus.utils.common.SystemConstants;
@@ -58,6 +60,8 @@ public class ShopServiceImpl extends ServiceImpl<ShopMapper, Shop> implements IS
     private ShopBloomFilter shopBloomFilter;
     @Resource
     private UserMapper userMapper;
+    @Resource
+    private ApplicationEventPublisher eventPublisher;
 
     /**
      * 根据id查询商铺信息
@@ -200,6 +204,7 @@ public class ShopServiceImpl extends ServiceImpl<ShopMapper, Shop> implements IS
             public void afterCommit() {
                 evictShopCache(id);
                 refreshShopGeoIndex(oldShop, id);
+                eventPublisher.publishEvent(new AgentKnowledgeChangedEvent("shop", id, false));
             }
         });
 
@@ -335,6 +340,7 @@ public class ShopServiceImpl extends ServiceImpl<ShopMapper, Shop> implements IS
             public void afterCommit() {
                 // 新店铺没有旧 GEO 记录，提交后仅写入新的位置索引。
                 refreshShopGeoIndex(null, shopId);
+                eventPublisher.publishEvent(new AgentKnowledgeChangedEvent("shop", shopId, false));
             }
         });
         return Result.ok(shopId);

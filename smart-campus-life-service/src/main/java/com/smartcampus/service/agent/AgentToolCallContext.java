@@ -10,6 +10,7 @@ import java.util.Set;
 import com.smartcampus.dto.AgentCard;
 import com.smartcampus.dto.MyVoucherDTO;
 import com.smartcampus.entity.Voucher;
+import com.smartcampus.service.agent.stream.AgentStreamEventContext;
 
 /**
  * 一次同步 ChatClient 调用的服务端上下文。
@@ -47,6 +48,7 @@ public final class AgentToolCallContext {
         Context context = HOLDER.get();
         if (context != null && toolName != null) {
             context.toolCalls.add(toolName);
+            AgentStreamEventContext.publishTool(toolName);
         }
     }
 

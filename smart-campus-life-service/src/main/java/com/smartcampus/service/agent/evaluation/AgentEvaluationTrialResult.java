@@ -25,6 +25,11 @@ public class AgentEvaluationTrialResult {
     private String presentationType;
     private List<String> toolCalls = new ArrayList<>();
     private int ragHitCount;
+    private int ragVectorHitCount;
+    private int ragKeywordHitCount;
+    private List<String> ragDocumentIds = new ArrayList<>();
+    private boolean ragReranked;
+    private double ragRecallAtK;
     private int cardCount;
     /** 未通过的 ERROR 断言数量。 */
     private int errorCount;

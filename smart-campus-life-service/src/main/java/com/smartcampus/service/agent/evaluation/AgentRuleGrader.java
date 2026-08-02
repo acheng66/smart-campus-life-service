@@ -54,6 +54,10 @@ public class AgentRuleGrader {
             result.setPresentationType(trace.getPresentationType());
             result.setToolCalls(new ArrayList<>(trace.getToolCalls()));
             result.setRagHitCount(trace.getRagHitCount());
+            result.setRagVectorHitCount(trace.getRagVectorHitCount());
+            result.setRagKeywordHitCount(trace.getRagKeywordHitCount());
+            result.setRagDocumentIds(new ArrayList<>(trace.getRagDocumentIds()));
+            result.setRagReranked(trace.isRagReranked());
             result.setLatencyMs(trace.getDurationMs());
         }
 
@@ -96,6 +100,16 @@ public class AgentRuleGrader {
         if (Boolean.TRUE.equals(expectation.getRagRequired())) {
             add(assertions, "rag_hit", trace != null && trace.getRagHitCount() > 0,
                     "RAG 命中文档数=" + (trace == null ? 0 : trace.getRagHitCount()));
+        }
+        if (!expectation.getExpectedRagDocumentIds().isEmpty()) {
+            Set<String> actualIds = trace == null ? new HashSet<>() : new HashSet<>(trace.getRagDocumentIds());
+            long recalled = expectation.getExpectedRagDocumentIds().stream().filter(actualIds::contains).count();
+            double recall = recalled / (double) expectation.getExpectedRagDocumentIds().size();
+            result.setRagRecallAtK(Math.round(recall * 10000D) / 10000D);
+            double minimum = expectation.getMinRagRecallAtK() == null ? 1D : expectation.getMinRagRecallAtK();
+            add(assertions, "rag_recall_at_k", recall >= minimum,
+                    "Recall@K=" + result.getRagRecallAtK() + "，期望文档="
+                            + expectation.getExpectedRagDocumentIds() + "，实际=" + actualIds);
         }
         if (Boolean.TRUE.equals(expectation.getRequireCards())) {
             add(assertions, "cards_required", !cards.isEmpty(),

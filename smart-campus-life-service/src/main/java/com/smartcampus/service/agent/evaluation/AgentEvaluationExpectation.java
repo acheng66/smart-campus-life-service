@@ -26,6 +26,10 @@ public class AgentEvaluationExpectation {
     private String expectedPresentationType;
     /** 是否要求 pgvector 至少命中一段知识。 */
     private Boolean ragRequired;
+    /** Recall@K 评测所需的稳定业务文档 ID，例如 voucher-1、shop-4。 */
+    private List<String> expectedRagDocumentIds = new ArrayList<>();
+    /** 最低召回率，未填写时只要配置了期望文档就默认要求 1.0。 */
+    private Double minRagRecallAtK;
     /** 是否要求至少返回一张可信业务卡片。 */
     private Boolean requireCards;
     /** 允许出现的卡片类型；为空时不限制。 */

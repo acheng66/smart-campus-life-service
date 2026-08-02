@@ -29,6 +29,10 @@ public class AgentWorkflowExecution {
     private String presentationType;
     private List<String> toolCalls = new ArrayList<>();
     private int ragHitCount;
+    private int ragVectorHitCount;
+    private int ragKeywordHitCount;
+    private List<String> ragDocumentIds = new ArrayList<>();
+    private boolean ragReranked;
     private boolean fallback;
     private long durationMs;
     private String failureType;

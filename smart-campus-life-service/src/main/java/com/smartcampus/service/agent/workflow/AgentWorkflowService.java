@@ -15,6 +15,7 @@ import org.springframework.stereotype.Service;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.smartcampus.dto.AgentExecutionTrace;
+import com.smartcampus.service.agent.stream.AgentStreamEventContext;
 
 import cn.hutool.core.util.StrUtil;
 import lombok.extern.slf4j.Slf4j;
@@ -63,6 +64,7 @@ public class AgentWorkflowService {
         execution.getTransitions().add(new AgentWorkflowTransition(null, AgentWorkflowState.CREATED,
                 "WORKFLOW_CREATED", "请求已进入 Agent 主链路", now));
         persist(execution, true);
+        AgentStreamEventContext.publishWorkflow(execution);
         return execution;
     }
 
@@ -84,6 +86,7 @@ public class AgentWorkflowService {
             execution.getTransitions().add(new AgentWorkflowTransition(source, target,
                     safeText(event, 60), safeText(detail, 200), now));
             persist(execution, false);
+            AgentStreamEventContext.publishWorkflow(execution);
         }
     }
 
@@ -99,6 +102,11 @@ public class AgentWorkflowService {
             execution.setToolCalls(trace.getToolCalls() == null
                     ? new ArrayList<>() : new ArrayList<>(trace.getToolCalls()));
             execution.setRagHitCount(trace.getRagHitCount());
+            execution.setRagVectorHitCount(trace.getRagVectorHitCount());
+            execution.setRagKeywordHitCount(trace.getRagKeywordHitCount());
+            execution.setRagDocumentIds(trace.getRagDocumentIds() == null
+                    ? new ArrayList<>() : new ArrayList<>(trace.getRagDocumentIds()));
+            execution.setRagReranked(trace.isRagReranked());
             execution.setFallback(trace.isFallback());
             execution.setDurationMs(trace.getDurationMs());
             execution.setUpdatedAt(LocalDateTime.now());
@@ -133,6 +141,7 @@ public class AgentWorkflowService {
             execution.getTransitions().add(new AgentWorkflowTransition(source, AgentWorkflowState.FAILED,
                     safeText(event, 60), execution.getFailureMessage(), now));
             persist(execution, false);
+            AgentStreamEventContext.publishWorkflow(execution);
         }
     }
 

@@ -42,8 +42,8 @@ utils/
 
 ## 校园助手（受控 Agent）
 
-前端入口为 `campus-assistant.html`，后端接口为 `POST /agent/chat` 与
-`POST /agent/actions/confirm`。两者均要求登录。
+前端入口为 `campus-assistant.html`，后端提供 `POST /agent/chat/stream` 流式入口、
+`POST /agent/chat` 同步兼容入口与 `POST /agent/actions/confirm` 确认入口，均要求登录。
 
 ```text
 自然语言问题
@@ -89,14 +89,40 @@ CREATED → INTENT_RESOLVED
 当前登录用户可调用 `GET /agent/workflows/{traceId}` 或 `GET /agent/workflows?limit=10` 排查自己的请求，
 服务端始终用 `UserHolder` 校验归属，不能查询其他用户的工作流。
 
+### SSE 流式响应与过程事件
+
+流式接口在不改变受控工具安全边界的前提下，将执行过程实时发送给浏览器：
+
+```text
+connected → status* → metadata → delta* → cards → complete
+                                      \→ error
+```
+
+- `status` 是经过白名单映射的工作流或业务查询阶段，不暴露 Prompt、内部工具名与异常堆栈；
+- `metadata` 返回本轮 `traceId` 与 `conversationId`；
+- `delta` 分块发送最终回答，前端使用打字队列平滑渲染；
+- `cards` 只在服务端完成意图边界、真实 ID 和展示类型校验后发送；
+- `complete/error` 明确终止本轮流，服务端每 15 秒发送心跳防止代理提前关闭连接。
+
+工具规划仍在同一个工作线程顺序执行，避免响应式切线程破坏 `UserHolder` 和
+`AgentToolCallContext`。SSE 连接断开只停止事件写出，不会触发写操作或自动重放工具。
+服务端设置 `X-Accel-Buffering: no`，并可通过 `AGENT_STREAM_TIMEOUT_MS`、
+`AGENT_STREAM_CHUNK_CODE_POINTS` 调整连接超时和文本分块大小。
+
 Agent 记忆分为两层：Redis 短期会话记忆保留同一会话最近 12 条消息、默认 24 小时过期；
 Redis 长期偏好记忆仅保存用户明确表达的忌口、偏好和预算描述，保留 180 天。它们只用于
 理解上下文，不能改变库存、资格或权限判断。
 
-可选 RAG 使用独立的 **PostgreSQL + pgvector**。它将商户介绍、优惠券规则和活动文案向量化，
-并持久化在 `public.agent_knowledge_vector_1024`；业务 MySQL 仍只保存商户、优惠券、订单等实时数据。
-启动时和每日凌晨会从业务库完整重建 RAG 文档，因此下架或删除的商户、券不会遗留在检索结果中。
-RAG 仅补充文本知识；实时库存、领取资格和活动状态必须调用业务工具。
+可选 RAG 使用独立的 **PostgreSQL + pgvector**，当前已升级为 Hybrid RAG：先结合短期会话执行
+Query Rewrite，再按 `kind/shopId/voucherType/status/indexVersion` 做 Metadata Filter，同时进行 pgvector
+语义召回和 PostgreSQL 全文/关键词召回，使用 RRF 融合候选，并可调用 SiliconFlow Reranker 精排，
+最后压缩与问题相关的店名、规则、时间和地址句后注入 Prompt。业务 MySQL 仍只保存商户、券和订单等实时数据；
+RAG 只补充文本知识，实时库存、领取资格和活动状态必须调用业务工具。
+
+全量重建不再先清空线上表。新文档以独立 `indexVersion` 写入并校验数量，随后通过
+`agent_rag_index_state` 的单行 UPSERT 原子切换活动版本；旧版本保留安全窗口后由定时任务清理。
+店铺与优惠券新增、编辑、上下架或删除会在 MySQL 事务提交后发布异步增量事件，更新当前活动版本；
+增量失败由每日版本化全量重建兜底。
 
 为避免未配置模型密钥时影响普通业务服务启动，AI 默认关闭。聊天模型默认使用 DeepSeek 的 OpenAI
 兼容接口；需要启用时设置：
@@ -113,6 +139,10 @@ export AGENT_RAG_ENABLED=true
 export SPRING_AI_MODEL_EMBEDDING=openai
 export SILICONFLOW_API_KEY='your-siliconflow-api-key'
 export SILICONFLOW_EMBEDDING_MODEL='Qwen/Qwen3-Embedding-0.6B'
+# Query Rewrite 会额外调用一次聊天模型；Reranker 默认复用 SiliconFlow Key。
+export AGENT_RAG_QUERY_REWRITE_ENABLED=true
+export AGENT_RAG_RERANKER_ENABLED=true
+export SILICONFLOW_RERANKER_MODEL='BAAI/bge-reranker-v2-m3'
 ```
 
 启用 RAG 前先启动独立的 pgvector 数据库（不会修改现有 MySQL）：
@@ -133,7 +163,7 @@ docker compose -f docker-compose.pgvector.yml up -d
 ### Agent 自动评测
 
 项目内置第一优先级的离线回归评测体系，默认关闭。它不只比较回答文字，还会读取服务端内部执行轨迹，
-检查模型是否真正参与、工具选择与调用顺序、RAG 命中、回答与业务卡片一致性、重复卡片、Markdown
+检查模型是否真正参与、工具选择与调用顺序、RAG 命中和 Recall@K、回答与业务卡片一致性、重复卡片、Markdown
 污染、危险写操作承诺和操作 Token 完整性。断言分为 `ERROR` 与 `WARNING`：
 业务错误、安全问题和卡片不一致会导致用例失败；可避免的重复只读查询只计入警告，不影响业务通过率。
 
@@ -179,7 +209,7 @@ Content-Type: application/json
 }
 ```
 
-只检查 RAG：
+只检查 RAG（Golden Case 会用 `shop-4`、`voucher-1` 等稳定业务文档 ID 计算 Recall@K）：
 
 ```json
 {

@@ -97,6 +97,40 @@ class AgentRuleGraderTest {
                 .allMatch(item -> item.getSeverity() == AgentEvaluationSeverity.WARNING);
     }
 
+    @Test
+    void shouldCalculateRecallAtKFromStableRagDocumentIds() {
+        AgentEvaluationCase evaluationCase = recommendationCase();
+        evaluationCase.getExpectation().setExpectedRagDocumentIds(List.of("shop-2", "voucher-1"));
+        evaluationCase.getExpectation().setMinRagRecallAtK(0.5D);
+        AgentChatResponse response = response("推荐北苑烤肉饭，评分高且有优惠券。",
+                shopCard(2L, "北苑烤肉饭"));
+        response.getExecutionTrace().setToolCalls(Arrays.asList("searchShops", "selectShopRecommendations"));
+        response.getExecutionTrace().setRagDocumentIds(List.of("shop-2", "shop-4"));
+
+        AgentEvaluationTrialResult graded = grader.grade(evaluationCase, 1, Result.ok(response));
+
+        assertThat(graded.isPassed()).isTrue();
+        assertThat(graded.getRagRecallAtK()).isEqualTo(0.5D);
+        assertThat(graded.getAssertions()).filteredOn(item -> "rag_recall_at_k".equals(item.getRule()))
+                .allMatch(AgentEvaluationAssertion::isPassed);
+    }
+
+    @Test
+    void shouldFailWhenRecallAtKIsBelowThreshold() {
+        AgentEvaluationCase evaluationCase = recommendationCase();
+        evaluationCase.getExpectation().setExpectedRagDocumentIds(List.of("voucher-1"));
+        AgentChatResponse response = response("推荐北苑烤肉饭，评分高且有优惠券。",
+                shopCard(2L, "北苑烤肉饭"));
+        response.getExecutionTrace().setToolCalls(Arrays.asList("searchShops", "selectShopRecommendations"));
+        response.getExecutionTrace().setRagDocumentIds(List.of("shop-2"));
+
+        AgentEvaluationTrialResult graded = grader.grade(evaluationCase, 1, Result.ok(response));
+
+        assertThat(graded.isPassed()).isFalse();
+        assertThat(graded.getAssertions()).filteredOn(item -> "rag_recall_at_k".equals(item.getRule()))
+                .allMatch(item -> !item.isPassed());
+    }
+
     private AgentEvaluationCase recommendationCase() {
         AgentEvaluationExpectation expectation = new AgentEvaluationExpectation();
         expectation.setExpectedMode("AI");

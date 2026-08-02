@@ -297,11 +297,18 @@ public class CampusAgentServiceImpl implements ICampusAgentService {
             // RAG 只补充规则/介绍文本，Prompt 明确要求实时库存和资格必须再次调用工具。
             AgentKnowledgeService.RetrievalResult retrieval = agentKnowledgeService == null
                     ? new AgentKnowledgeService.RetrievalResult("无", 0)
-                    : agentKnowledgeService.retrieveWithMetadata(message);
+                    : agentKnowledgeService.retrieveWithMetadata(message, shortMemory);
             String knowledge = retrieval.getContent();
             executionTrace.setRagHitCount(retrieval.getHitCount());
+            executionTrace.setRagVectorHitCount(retrieval.getVectorHitCount());
+            executionTrace.setRagKeywordHitCount(retrieval.getKeywordHitCount());
+            executionTrace.setRagDocumentIds(retrieval.getDocumentIds());
+            executionTrace.setRagReranked(retrieval.isReranked());
             agentWorkflowService.transition(workflow, AgentWorkflowState.CONTEXT_READY,
-                    "CONTEXT_READY", "RAG 命中=" + retrieval.getHitCount());
+                    "CONTEXT_READY", "RAG final=" + retrieval.getHitCount()
+                            + ", vector=" + retrieval.getVectorHitCount()
+                            + ", keyword=" + retrieval.getKeywordHitCount()
+                            + ", reranked=" + retrieval.isReranked());
             agentWorkflowService.transition(workflow, AgentWorkflowState.MODEL_PLANNING,
                     "MODEL_PLANNING", "ChatClient 开始规划受控工具调用");
             String answer = campusAgentChatClient.prompt()

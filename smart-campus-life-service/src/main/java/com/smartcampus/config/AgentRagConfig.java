@@ -11,6 +11,10 @@ import org.springframework.boot.jdbc.DataSourceBuilder;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.scheduling.annotation.EnableAsync;
+import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
+
+import java.util.concurrent.Executor;
 
 /**
  * Agent RAG 的独立 pgvector 数据源。
@@ -20,8 +24,25 @@ import org.springframework.jdbc.core.JdbcTemplate;
  * 库存、资格和订单仍以业务库的实时查询为准。</p>
  */
 @Configuration
+@EnableAsync
 @ConditionalOnProperty(prefix = "agent.rag", name = "enabled", havingValue = "true")
 public class AgentRagConfig {
+
+    /**
+     * 单线程有界队列保证同一店铺/券的增量事件按提交顺序写入，避免默认异步执行器无限创建线程。
+     */
+    @Bean("agentRagTaskExecutor")
+    public Executor agentRagTaskExecutor() {
+        ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
+        executor.setCorePoolSize(1);
+        executor.setMaxPoolSize(1);
+        executor.setQueueCapacity(100);
+        executor.setThreadNamePrefix("agent-rag-index-");
+        executor.setWaitForTasksToCompleteOnShutdown(true);
+        executor.setAwaitTerminationSeconds(10);
+        executor.initialize();
+        return executor;
+    }
 
     @Bean
     public AgentRagDataSource agentRagDataSource(

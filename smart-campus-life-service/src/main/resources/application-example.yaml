@@ -64,6 +64,11 @@ cache:
     rebuild-cron: ${SHOP_BLOOM_REBUILD_CRON:0 0 3 * * ?}
 
 agent:
+  stream:
+    # SSE 连接最长保留时间；需大于模型与工具链的最坏执行时间。
+    timeout-ms: ${AGENT_STREAM_TIMEOUT_MS:120000}
+    # 每个 delta 事件包含的最大 Unicode 字符数；前端会继续执行平滑打字动画。
+    chunk-code-points: ${AGENT_STREAM_CHUNK_CODE_POINTS:12}
   ai:
     enabled: ${AGENT_AI_ENABLED:false}
   workflow:
@@ -97,6 +102,22 @@ agent:
     initialize-schema: ${AGENT_RAG_INITIALIZE_SCHEMA:true}
     rebuild-on-startup: ${AGENT_RAG_REBUILD_ON_STARTUP:true}
     rebuild-cron: ${AGENT_RAG_REBUILD_CRON:0 30 3 * * ?}
+    cleanup-cron: ${AGENT_RAG_CLEANUP_CRON:0 10 4 * * ?}
+    # Hybrid RAG：扩大两路召回，再融合、精排并压缩为最终上下文。
+    vector-top-k: ${AGENT_RAG_VECTOR_TOP_K:12}
+    keyword-top-k: ${AGENT_RAG_KEYWORD_TOP_K:12}
+    final-top-k: ${AGENT_RAG_FINAL_TOP_K:4}
+    similarity-threshold: ${AGENT_RAG_SIMILARITY_THRESHOLD:0.45}
+    max-context-chars: ${AGENT_RAG_MAX_CONTEXT_CHARS:1400}
+    query-rewrite:
+      # 会额外调用一次聊天模型；关闭时直接使用原问题。
+      enabled: ${AGENT_RAG_QUERY_REWRITE_ENABLED:true}
+    reranker:
+      # 未配置 Key 或调用失败时自动保留 RRF 融合排序。
+      enabled: ${AGENT_RAG_RERANKER_ENABLED:true}
+      base-url: ${SILICONFLOW_BASE_URL:https://api.siliconflow.cn}
+      api-key: ${SILICONFLOW_API_KEY:${spring.ai.openai.embedding.api-key:}}
+      model: ${SILICONFLOW_RERANKER_MODEL:BAAI/bge-reranker-v2-m3}
 
 mybatis-plus:
   type-aliases-package: com.smartcampus.entity

@@ -25,6 +25,14 @@ public class AgentExecutionTrace {
     private List<String> candidateShopTitles = new ArrayList<>();
     /** 本轮向量检索通过相似度阈值的文档数量；RAG 未启用或未命中时为 0。 */
     private int ragHitCount;
+    /** Hybrid RAG 的 pgvector 语义召回数量。 */
+    private int ragVectorHitCount;
+    /** Hybrid RAG 的 PostgreSQL 关键词召回数量。 */
+    private int ragKeywordHitCount;
+    /** 最终进入上下文的稳定业务文档 ID，用于 Recall@K 评测。 */
+    private List<String> ragDocumentIds = new ArrayList<>();
+    /** 是否实际经过外部 Reranker 精排。 */
+    private boolean ragReranked;
     /** 模型、工具或增强链路异常后是否进入过确定性降级。 */
     private boolean fallback;
     /** 从 Agent Service 收到请求到构造响应的耗时，单位毫秒。 */

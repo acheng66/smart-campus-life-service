@@ -7,6 +7,7 @@ import jakarta.annotation.Resource;
 import org.springframework.transaction.support.TransactionSynchronizationAdapter;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -22,6 +23,7 @@ import com.smartcampus.mapper.voucher.VoucherMapper;
 import com.smartcampus.mapper.voucher.VoucherOrderMapper;
 import com.smartcampus.service.voucher.ISeckillVoucherService;
 import com.smartcampus.service.voucher.IVoucherService;
+import com.smartcampus.service.agent.rag.AgentKnowledgeChangedEvent;
 import com.smartcampus.utils.redis.RedisConstants;
 import com.smartcampus.utils.auth.UserHolder;
 import com.smartcampus.utils.auth.UserRole;
@@ -43,6 +45,8 @@ public class VoucherServiceImpl extends ServiceImpl<VoucherMapper, Voucher> impl
     private VoucherOrderMapper voucherOrderMapper;
     @Resource
     private ShopMapper shopMapper;
+    @Resource
+    private ApplicationEventPublisher eventPublisher;
 
     @Override
     public Result queryVoucherOfShop(Long shopId) {
@@ -63,6 +67,7 @@ public class VoucherServiceImpl extends ServiceImpl<VoucherMapper, Voucher> impl
         if (!save(voucher)) {
             return Result.fail("新增普通券失败");
         }
+        eventPublisher.publishEvent(new AgentKnowledgeChangedEvent("voucher", voucher.getId(), false));
         return Result.ok(voucher.getId());
     }
 
@@ -92,7 +97,10 @@ public class VoucherServiceImpl extends ServiceImpl<VoucherMapper, Voucher> impl
         seckillVoucher.setEndTime(voucher.getEndTime());
         seckillVoucherService.save(seckillVoucher);
         // 数据库提交成功后才对外开放 Redis 库存，避免事务回滚留下可抢的脏库存。
-        afterCommit(() -> writeSeckillStock(voucher.getId(), voucher.getStock()));
+        afterCommit(() -> {
+            writeSeckillStock(voucher.getId(), voucher.getStock());
+            eventPublisher.publishEvent(new AgentKnowledgeChangedEvent("voucher", voucher.getId(), false));
+        });
         return Result.ok(voucher.getId());
     }
 
@@ -132,6 +140,8 @@ public class VoucherServiceImpl extends ServiceImpl<VoucherMapper, Voucher> impl
         }
 
         if (!Integer.valueOf(1).equals(oldVoucher.getType())) {
+            afterCommit(() -> eventPublisher.publishEvent(
+                    new AgentKnowledgeChangedEvent("voucher", voucherId, false)));
             return Result.ok();
         }
         if (voucher.getStock() != null || voucher.getBeginTime() != null || voucher.getEndTime() != null) {
@@ -148,6 +158,8 @@ public class VoucherServiceImpl extends ServiceImpl<VoucherMapper, Voucher> impl
         if (voucher.getStock() != null && Integer.valueOf(1).equals(oldVoucher.getStatus())) {
             afterCommit(() -> writeSeckillStock(voucherId, voucher.getStock()));
         }
+        afterCommit(() -> eventPublisher.publishEvent(
+                new AgentKnowledgeChangedEvent("voucher", voucherId, false)));
         return Result.ok();
     }
 
@@ -168,6 +180,8 @@ public class VoucherServiceImpl extends ServiceImpl<VoucherMapper, Voucher> impl
         if (!update().eq("id", voucherId).set("status", status).update()) {
             return Result.fail("更新优惠券状态失败");
         }
+        afterCommit(() -> eventPublisher.publishEvent(
+                new AgentKnowledgeChangedEvent("voucher", voucherId, false)));
         if (!Integer.valueOf(1).equals(voucher.getType())) {
             return Result.ok();
         }
@@ -213,7 +227,11 @@ public class VoucherServiceImpl extends ServiceImpl<VoucherMapper, Voucher> impl
             afterCommit(() -> {
                 stringRedisTemplate.delete(RedisConstants.SECKILL_STOCK_KEY + voucherId);
                 stringRedisTemplate.delete(RedisConstants.SECKILL_ORDER_KEY + voucherId);
+                eventPublisher.publishEvent(new AgentKnowledgeChangedEvent("voucher", voucherId, true));
             });
+        } else {
+            afterCommit(() -> eventPublisher.publishEvent(
+                    new AgentKnowledgeChangedEvent("voucher", voucherId, true)));
         }
         return Result.ok();
     }
