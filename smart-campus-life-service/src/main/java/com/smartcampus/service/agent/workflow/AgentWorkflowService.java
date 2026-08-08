@@ -107,6 +107,10 @@ public class AgentWorkflowService {
             execution.setRagDocumentIds(trace.getRagDocumentIds() == null
                     ? new ArrayList<>() : new ArrayList<>(trace.getRagDocumentIds()));
             execution.setRagReranked(trace.isRagReranked());
+            execution.setRagOriginalQuery(safeText(trace.getRagOriginalQuery(), 300));
+            execution.setRagRewrittenQuery(safeText(trace.getRagRewrittenQuery(), 160));
+            execution.setRagMetadataFilter(safeText(trace.getRagMetadataFilter(), 300));
+            execution.setRagFilterRelaxed(trace.isRagFilterRelaxed());
             execution.setFallback(trace.isFallback());
             execution.setDurationMs(trace.getDurationMs());
             execution.setUpdatedAt(LocalDateTime.now());

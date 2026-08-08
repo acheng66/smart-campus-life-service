@@ -33,6 +33,10 @@ public class AgentWorkflowExecution {
     private int ragKeywordHitCount;
     private List<String> ragDocumentIds = new ArrayList<>();
     private boolean ragReranked;
+    private String ragOriginalQuery;
+    private String ragRewrittenQuery;
+    private String ragMetadataFilter;
+    private boolean ragFilterRelaxed;
     private boolean fallback;
     private long durationMs;
     private String failureType;

@@ -79,8 +79,18 @@ agent:
     stale-minutes: ${AGENT_WORKFLOW_STALE_MINUTES:30}
     recovery-interval-ms: ${AGENT_WORKFLOW_RECOVERY_INTERVAL_MS:60000}
   memory:
+    # 复用 Agent RAG 的 PostgreSQL 数据源保存完整会话、摘要版本和结构化长期偏好。
+    persistence-enabled: ${AGENT_MEMORY_PERSISTENCE_ENABLED:true}
+    initialize-schema: ${AGENT_MEMORY_INITIALIZE_SCHEMA:true}
+    schema-name: ${AGENT_MEMORY_SCHEMA:public}
     short-ttl-hours: ${AGENT_SHORT_MEMORY_TTL_HOURS:24}
-    max-messages: ${AGENT_SHORT_MEMORY_MAX_MESSAGES:12}
+    max-messages: ${AGENT_SHORT_MEMORY_MAX_MESSAGES:16}
+    max-context-chars: ${AGENT_MEMORY_MAX_CONTEXT_CHARS:6000}
+    summary:
+      recent-messages: ${AGENT_MEMORY_SUMMARY_RECENT_MESSAGES:16}
+      min-new-messages: ${AGENT_MEMORY_SUMMARY_MIN_NEW_MESSAGES:4}
+      overlap-messages: ${AGENT_MEMORY_SUMMARY_OVERLAP_MESSAGES:2}
+      max-source-messages: ${AGENT_MEMORY_SUMMARY_MAX_SOURCE_MESSAGES:120}
   evaluation:
     # 自动评测会真实调用模型和业务只读工具，默认关闭；仅在受控环境显式启用。
     enabled: ${AGENT_EVALUATION_ENABLED:false}
@@ -109,6 +119,9 @@ agent:
     final-top-k: ${AGENT_RAG_FINAL_TOP_K:4}
     similarity-threshold: ${AGENT_RAG_SIMILARITY_THRESHOLD:0.45}
     max-context-chars: ${AGENT_RAG_MAX_CONTEXT_CHARS:1400}
+    keyword:
+      # 使用 PostgreSQL 自带 pg_trgm 为 ILIKE 子串匹配建立 GIN 索引；无安装权限时自动降级。
+      trigram-enabled: ${AGENT_RAG_TRIGRAM_ENABLED:true}
     query-rewrite:
       # 会额外调用一次聊天模型；关闭时直接使用原问题。
       enabled: ${AGENT_RAG_QUERY_REWRITE_ENABLED:true}

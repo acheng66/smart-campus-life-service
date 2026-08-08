@@ -33,6 +33,12 @@ public class AgentExecutionTrace {
     private List<String> ragDocumentIds = new ArrayList<>();
     /** 是否实际经过外部 Reranker 精排。 */
     private boolean ragReranked;
+    /** 用户原始问题与 Query Rewrite 结果，用于判断改写是否发生语义漂移。 */
+    private String ragOriginalQuery;
+    private String ragRewrittenQuery;
+    /** 最终实际应用的 Metadata Filter，以及是否发生过 kind 放宽。 */
+    private String ragMetadataFilter;
+    private boolean ragFilterRelaxed;
     /** 模型、工具或增强链路异常后是否进入过确定性降级。 */
     private boolean fallback;
     /** 从 Agent Service 收到请求到构造响应的耗时，单位毫秒。 */

@@ -36,7 +36,9 @@ import com.smartcampus.entity.Shop;
 import com.smartcampus.entity.Voucher;
 import com.smartcampus.service.agent.rag.AgentKnowledgeChangedEvent;
 import com.smartcampus.service.agent.rag.AgentQueryRewriteService;
+import com.smartcampus.service.agent.rag.ChineseSearchAnalyzer;
 import com.smartcampus.service.agent.rag.RagDocumentCandidate;
+import com.smartcampus.service.agent.rag.RagFilterPolicy;
 import com.smartcampus.service.agent.rag.RagMetadataFilter;
 import com.smartcampus.service.agent.rag.SiliconFlowReranker;
 import com.smartcampus.service.shop.IShopService;
@@ -58,6 +60,7 @@ import lombok.extern.slf4j.Slf4j;
 @ConditionalOnProperty(prefix = "agent.rag", name = "enabled", havingValue = "true")
 public class AgentKnowledgeService {
     private static final double RRF_K = 60D;
+    private static final long SHOP_ENTITY_CACHE_TTL_MILLIS = 5 * 60 * 1000L;
     private static final Pattern SQL_IDENTIFIER = Pattern.compile("[A-Za-z_][A-Za-z0-9_]*");
     private static final TypeReference<Map<String, Object>> MAP_TYPE = new TypeReference<>() { };
 
@@ -73,6 +76,8 @@ public class AgentKnowledgeService {
     private ISeckillVoucherService seckillVoucherService;
     @Resource
     private ObjectMapper objectMapper;
+    @Resource
+    private ChineseSearchAnalyzer chineseSearchAnalyzer;
     @Autowired(required = false)
     private AgentQueryRewriteService queryRewriteService;
     @Autowired(required = false)
@@ -94,6 +99,11 @@ public class AgentKnowledgeService {
     private double similarityThreshold;
     @Value("${agent.rag.max-context-chars:1400}")
     private int maxContextChars;
+    @Value("${agent.rag.keyword.trigram-enabled:true}")
+    private boolean trigramEnabled;
+    /** 店铺名称实体缓存，避免每次 RAG 查询都从 MySQL 全表读取店铺。 */
+    private volatile List<Shop> shopEntityCache = Collections.emptyList();
+    private volatile long shopEntityCacheExpiresAt;
 
     @EventListener(ApplicationReadyEvent.class)
     public void initializeKnowledgeOnStartup() {
@@ -154,37 +164,60 @@ public class AgentKnowledgeService {
     }
 
     public String retrieve(String question) {
-        return retrieveWithMetadata(question, "无").getContent();
+        return retrieveWithMetadata(question, "无", null).getContent();
     }
 
     public RetrievalResult retrieveWithMetadata(String question) {
-        return retrieveWithMetadata(question, "无");
+        return retrieveWithMetadata(question, "无", null);
     }
 
-    /** 执行完整 Hybrid RAG，并返回自动评测所需的召回元数据。 */
     public RetrievalResult retrieveWithMetadata(String question, String recentContext) {
+        return retrieveWithMetadata(question, recentContext, null);
+    }
+
+    /**
+     * 执行完整 Hybrid RAG，并返回自动评测所需的召回元数据。
+     *
+     * <p>原问题与改写问题共同参与召回，避免 Query Rewrite 语义漂移覆盖用户原始表达；当严格条件
+     * 完全零命中时只放宽 kind，店铺、券类型、状态和活动版本等约束保持不变。</p>
+     */
+    public RetrievalResult retrieveWithMetadata(String question, String recentContext, AgentIntent intent) {
         try {
-            String rewritten = queryRewriteService == null ? question
+            String original = StrUtil.blankToDefault(question, "");
+            String rewritten = queryRewriteService == null ? original
                     : queryRewriteService.rewrite(question, recentContext);
-            RagMetadataFilter filter = inferFilter(rewritten);
+            RagMetadataFilter strictFilter = inferFilter(original + " " + rewritten, intent);
             String version = activeVersion();
-            List<String> keywords = extractKeywords(rewritten, filter);
-            List<RagDocumentCandidate> vectorCandidates = vectorRecall(rewritten, version, filter);
-            List<RagDocumentCandidate> keywordCandidates = keywordRecall(rewritten, keywords, version, filter);
-            List<RagDocumentCandidate> fused = reciprocalRankFusion(vectorCandidates, keywordCandidates);
+            if (StrUtil.isBlank(version)) {
+                return new RetrievalResult("无", 0, 0, 0, original, rewritten,
+                        Collections.emptyList(), false, strictFilter.toString(), false);
+            }
+            List<String> keywords = mergeKeywords(
+                    extractKeywords(original, strictFilter), extractKeywords(rewritten, strictFilter));
+            RecallBundle recall = hybridRecall(original, rewritten, keywords, version, strictFilter);
+            RagMetadataFilter appliedFilter = strictFilter;
+            boolean filterRelaxed = false;
+            if (recall.fused().isEmpty() && StrUtil.isNotBlank(strictFilter.getKind())) {
+                appliedFilter = strictFilter.withoutKind();
+                recall = hybridRecall(original, rewritten, keywords, version, appliedFilter);
+                filterRelaxed = true;
+            }
+            List<RagDocumentCandidate> fused = recall.fused();
             boolean reranked = reranker != null && reranker.isAvailable() && fused.size() > 1;
             List<RagDocumentCandidate> selected = reranker == null
                     ? limit(fused, finalTopK) : reranker.rerank(rewritten, fused, finalTopK);
             String content = compressContext(selected, keywords);
             List<String> documentIds = selected.stream().map(RagDocumentCandidate::getBusinessId)
                     .filter(StrUtil::isNotBlank).distinct().toList();
-            log.debug("Hybrid RAG 完成, vector={}, keyword={}, final={}, filter={}",
-                    vectorCandidates.size(), keywordCandidates.size(), selected.size(), filter);
+            log.debug("Hybrid RAG 完成, vector={}, keyword={}, final={}, filter={}, relaxed={}",
+                    recall.vectorCount(), recall.keywordCount(), selected.size(), appliedFilter, filterRelaxed);
             return new RetrievalResult(StrUtil.isBlank(content) ? "无" : content, selected.size(),
-                    vectorCandidates.size(), keywordCandidates.size(), rewritten, documentIds, reranked);
+                    recall.vectorCount(), recall.keywordCount(), original, rewritten,
+                    documentIds, reranked, appliedFilter.toString(), filterRelaxed);
         } catch (Exception e) {
             log.warn("Agent Hybrid RAG 检索失败，将忽略知识上下文", e);
-            return new RetrievalResult("无", 0, 0, 0, question, Collections.emptyList(), false);
+            return new RetrievalResult("无", 0, 0, 0, question, question,
+                    Collections.emptyList(), false, "", false);
         }
     }
 
@@ -202,6 +235,7 @@ public class AgentKnowledgeService {
                 return;
             }
             if ("shop".equals(event.kind())) {
+                invalidateShopEntityCache();
                 updateShopKnowledge(version, event.businessId(), event.deleted());
             } else if ("voucher".equals(event.kind())) {
                 updateVoucherKnowledge(version, event.businessId(), event.deleted());
@@ -231,6 +265,8 @@ public class AgentKnowledgeService {
         metadata.put("shopTypeId", String.valueOf(shop.getTypeId()));
         String text = "商户：" + defaultText(shop.getName()) + "。地址：" + defaultText(shop.getAddress())
                 + "。区域：" + defaultText(shop.getArea()) + "。营业时间：" + defaultText(shop.getOpenHours());
+        metadata.put("titleTokens", chineseSearchAnalyzer.analyzeTitle(shop.getName()));
+        metadata.put("searchTokens", chineseSearchAnalyzer.analyzeDocument(text));
         return new Document(physicalId(version, businessId), text, metadata);
     }
 
@@ -247,6 +283,8 @@ public class AgentKnowledgeService {
         if (activity != null) {
             text += "。秒杀活动时间：" + activity.getBeginTime() + " 至 " + activity.getEndTime();
         }
+        metadata.put("titleTokens", chineseSearchAnalyzer.analyzeTitle(voucher.getTitle()));
+        metadata.put("searchTokens", chineseSearchAnalyzer.analyzeDocument(text));
         return new Document(physicalId(version, businessId), text, metadata);
     }
 
@@ -260,20 +298,61 @@ public class AgentKnowledgeService {
         return metadata;
     }
 
+    /** 原问题保留精确表达，改写问题补全多轮指代；两者的召回结果统一进入 RRF。 */
+    private RecallBundle hybridRecall(String original, String rewritten, List<String> keywords,
+            String version, RagMetadataFilter filter) {
+        List<RagDocumentCandidate> originalVector = vectorRecall(original, version, filter);
+        List<RagDocumentCandidate> rewrittenVector = sameQuery(original, rewritten)
+                ? Collections.emptyList() : vectorRecall(rewritten, version, filter);
+        List<RagDocumentCandidate> originalKeyword = keywordRecall(original, keywords, version, filter);
+        List<RagDocumentCandidate> rewrittenKeyword = sameQuery(original, rewritten)
+                ? Collections.emptyList() : keywordRecall(rewritten, keywords, version, filter);
+        List<RagDocumentCandidate> fused = reciprocalRankFusion(
+                originalVector, rewrittenVector, originalKeyword, rewrittenKeyword);
+        return new RecallBundle(fused,
+                distinctCandidateCount(originalVector, rewrittenVector),
+                distinctCandidateCount(originalKeyword, rewrittenKeyword));
+    }
+
+    /**
+     * 从 pgvector 执行一路语义召回。
+     *
+     * <p>{@link org.springframework.ai.vectorstore.pgvector.PgVectorStore} 会先通过
+     * {@link org.springframework.ai.embedding.EmbeddingModel}
+     * 将 query 转换为查询向量，再在当前活动索引版本和业务 Metadata 边界内按余弦相似度检索。
+     * 本方法既可用于原始问题，也可用于 Query Rewrite 后的问题；多路结果之后统一交给 RRF 融合。</p>
+     *
+     * @param query 本路召回使用的查询文本，可以是原问题或改写后的独立问题
+     * @param version 当前活动索引版本，只允许召回该版本的文档，避免新旧版本重复
+     * @param filter 店铺、文档类型、优惠券类型及状态等服务端推导的业务过滤条件
+     * @return 已按语义相关性排序的统一候选列表；没有命中时返回空集合
+     */
     private List<RagDocumentCandidate> vectorRecall(String query, String version, RagMetadataFilter filter) {
+        // 召回数量不能小于最终需要的数量。例如 finalTopK=4 时，即使误将 vectorTopK 配成 3，
+        // 这里仍至少召回 4 条；similarityThreshold 则负责剔除低相关文档，所以结果不一定达到 TopK。
         SearchRequest.Builder builder = SearchRequest.builder().query(query)
                 .topK(Math.max(vectorTopK, finalTopK)).similarityThreshold(similarityThreshold);
+
+        // 将 activeVersion 与 kind、shopId、voucherType、status 等条件转换为 Spring AI FilterExpression。
+        // 这些条件在向量召回阶段预过滤，而不是先检索全库再在 Java 内过滤。
         String expression = filterExpression(version, filter);
         if (StrUtil.isNotBlank(expression)) {
             builder.filterExpression(expression);
         }
+
+        // PgVectorStore 内部完成：查询文本 Embedding → pgvector 余弦距离检索
+        // → 相似度阈值过滤 → 按相关性排序 → 返回最多 TopK 个 Document。
         List<Document> documents = vectorStore.similaritySearch(builder.build());
         if (documents == null) {
             return Collections.emptyList();
         }
+
+        // 将 Spring AI Document 转成 Hybrid RAG 的统一候选类型，便于和关键词召回结果一起进入 RRF。
+        // physicalId 用于定位具体索引版本中的记录，metadata 中稳定的 businessId 用于跨通道去重。
         List<RagDocumentCandidate> result = new ArrayList<>();
         for (Document document : documents) {
             RagDocumentCandidate candidate = fromDocument(document);
+            // RRF 当前按排名融合，不直接混合不同量纲的原始分数；仍保存向量分数用于评测、调试和扩展。
             candidate.setVectorScore(document.getScore() == null ? 0D : document.getScore());
             result.add(candidate);
         }
@@ -282,20 +361,26 @@ public class AgentKnowledgeService {
 
     private List<RagDocumentCandidate> keywordRecall(String query, List<String> keywords,
             String version, RagMetadataFilter filter) {
+        String tsQuery = chineseSearchAnalyzer.toTsQuery(query, keywords);
+        List<String> fuzzyTerms = chineseSearchAnalyzer.fuzzyTerms(query, keywords);
+        if (StrUtil.isBlank(tsQuery) && fuzzyTerms.isEmpty()) {
+            return Collections.emptyList();
+        }
         List<Object> args = new ArrayList<>();
+        String keywordVector = keywordVectorExpression();
         StringBuilder sql = new StringBuilder("SELECT id, content, metadata::text, "
-                + "ts_rank_cd(to_tsvector('simple', content), plainto_tsquery('simple', ?)) AS text_score "
+                + "ts_rank_cd(").append(keywordVector).append(", to_tsquery('simple', ?)) AS text_score "
                 + "FROM ").append(qualifiedTable()).append(" WHERE 1=1");
-        args.add(query);
+        args.add(tsQuery);
         appendMetadataSql(sql, args, "indexVersion", version);
         appendMetadataSql(sql, args, "kind", filter.getKind());
         appendMetadataSql(sql, args, "shopId", filter.getShopId() == null ? null : String.valueOf(filter.getShopId()));
         appendMetadataSql(sql, args, "voucherType", filter.getVoucherType());
         appendMetadataSql(sql, args, "status", filter.getStatus());
-        if (!keywords.isEmpty()) {
-            sql.append(" AND (to_tsvector('simple', content) @@ plainto_tsquery('simple', ?) ");
-            args.add(query);
-            for (String keyword : keywords) {
+        if (StrUtil.isNotBlank(tsQuery) || !fuzzyTerms.isEmpty()) {
+            sql.append(" AND (").append(keywordVector).append(" @@ to_tsquery('simple', ?) ");
+            args.add(tsQuery);
+            for (String keyword : fuzzyTerms) {
                 sql.append(" OR content ILIKE ?");
                 args.add("%" + keyword + "%");
             }
@@ -316,11 +401,14 @@ public class AgentKnowledgeService {
         }, args.toArray());
     }
 
-    private List<RagDocumentCandidate> reciprocalRankFusion(List<RagDocumentCandidate> vector,
-            List<RagDocumentCandidate> keyword) {
+    private List<RagDocumentCandidate> reciprocalRankFusion(List<RagDocumentCandidate> originalVector,
+            List<RagDocumentCandidate> rewrittenVector, List<RagDocumentCandidate> originalKeyword,
+            List<RagDocumentCandidate> rewrittenKeyword) {
         Map<String, RagDocumentCandidate> merged = new LinkedHashMap<>();
-        addRanked(merged, vector, true);
-        addRanked(merged, keyword, false);
+        addRanked(merged, originalVector, true);
+        addRanked(merged, rewrittenVector, true);
+        addRanked(merged, originalKeyword, false);
+        addRanked(merged, rewrittenKeyword, false);
         List<RagDocumentCandidate> result = new ArrayList<>(merged.values());
         result.sort(Comparator.comparingDouble(RagDocumentCandidate::getFusionScore).reversed());
         return result;
@@ -371,20 +459,16 @@ public class AgentKnowledgeService {
         return context.toString();
     }
 
-    private RagMetadataFilter inferFilter(String question) {
+    private RagMetadataFilter inferFilter(String question, AgentIntent intent) {
         RagMetadataFilter filter = new RagMetadataFilter();
         String text = StrUtil.blankToDefault(question, "").toLowerCase();
-        for (Shop shop : shopService.list()) {
+        for (Shop shop : shopsForEntityResolution()) {
             if (StrUtil.isNotBlank(shop.getName()) && text.contains(shop.getName().toLowerCase())) {
                 filter.setShopId(shop.getId());
                 break;
             }
         }
-        if (containsAny(text, "优惠券", "券", "满减", "代金", "秒杀")) {
-            filter.setKind("voucher");
-        } else if (containsAny(text, "营业", "地址", "在哪", "商户", "店铺", "商铺")) {
-            filter.setKind("shop");
-        }
+        filter.setKind(RagFilterPolicy.resolveKind(intent, text));
         if (text.contains("秒杀")) {
             filter.setVoucherType("SECKILL");
         } else if (containsAny(text, "普通券", "代金券")) {
@@ -394,6 +478,56 @@ public class AgentKnowledgeService {
             filter.setStatus("ACTIVE");
         }
         return filter;
+    }
+
+    /** 本地短时实体缓存；店铺增删改事件会主动失效，TTL 负责多实例或漏事件时最终刷新。 */
+    private List<Shop> shopsForEntityResolution() {
+        long now = System.currentTimeMillis();
+        if (now < shopEntityCacheExpiresAt) {
+            return shopEntityCache;
+        }
+        synchronized (this) {
+            if (now >= shopEntityCacheExpiresAt) {
+                List<Shop> shops = shopService.list();
+                shopEntityCache = shops == null ? Collections.emptyList() : List.copyOf(shops);
+                shopEntityCacheExpiresAt = now + SHOP_ENTITY_CACHE_TTL_MILLIS;
+            }
+            return shopEntityCache;
+        }
+    }
+
+    private void invalidateShopEntityCache() {
+        shopEntityCacheExpiresAt = 0L;
+        shopEntityCache = Collections.emptyList();
+    }
+
+    private List<String> mergeKeywords(List<String> first, List<String> second) {
+        Set<String> merged = new LinkedHashSet<>();
+        if (first != null) {
+            merged.addAll(first);
+        }
+        if (second != null) {
+            merged.addAll(second);
+        }
+        return merged.stream().filter(StrUtil::isNotBlank).limit(8).toList();
+    }
+
+    private boolean sameQuery(String first, String second) {
+        return StrUtil.equals(StrUtil.trim(first), StrUtil.trim(second));
+    }
+
+    @SafeVarargs
+    private final int distinctCandidateCount(List<RagDocumentCandidate>... groups) {
+        Set<String> ids = new LinkedHashSet<>();
+        for (List<RagDocumentCandidate> group : groups) {
+            if (group == null) {
+                continue;
+            }
+            for (RagDocumentCandidate candidate : group) {
+                ids.add(StrUtil.blankToDefault(candidate.getBusinessId(), candidate.getPhysicalId()));
+            }
+        }
+        return ids.size();
     }
 
     private List<String> extractKeywords(String question, RagMetadataFilter filter) {
@@ -449,10 +583,33 @@ public class AgentKnowledgeService {
         jdbcTemplate.execute("CREATE TABLE IF NOT EXISTS " + qualifiedStateTable()
                 + " (index_name VARCHAR(128) PRIMARY KEY, active_version VARCHAR(64) NOT NULL, "
                 + "document_count INTEGER NOT NULL, updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP)");
-        jdbcTemplate.execute("CREATE INDEX IF NOT EXISTS " + tableName + "_fts_idx ON " + qualifiedTable()
-                + " USING GIN (to_tsvector('simple', content))");
+        jdbcTemplate.execute("CREATE INDEX IF NOT EXISTS " + tableName + "_zh_fts_idx ON " + qualifiedTable()
+                + " USING GIN (" + keywordVectorExpression() + ")");
         jdbcTemplate.execute("CREATE INDEX IF NOT EXISTS " + tableName + "_version_idx ON " + qualifiedTable()
                 + " ((metadata->>'indexVersion'))");
+        initializeTrigramIndex();
+    }
+
+    /**
+     * pg_trgm 只增强 ILIKE 子串兜底；扩展无权限安装时保留全文和向量召回，不能阻断整个 RAG。
+     */
+    private void initializeTrigramIndex() {
+        if (!trigramEnabled) {
+            return;
+        }
+        try {
+            jdbcTemplate.execute("CREATE EXTENSION IF NOT EXISTS pg_trgm");
+            jdbcTemplate.execute("CREATE INDEX IF NOT EXISTS " + tableName + "_content_trgm_idx ON "
+                    + qualifiedTable() + " USING GIN (content gin_trgm_ops)");
+        } catch (Exception e) {
+            log.warn("pg_trgm 初始化失败，ILIKE 将保留为无索引的兼容兜底", e);
+        }
+    }
+
+    /** 标题权重 A、正文权重 B；索引表达式与查询表达式必须完全一致。 */
+    private String keywordVectorExpression() {
+        return "setweight(to_tsvector('simple', COALESCE(metadata->>'titleTokens', '')), 'A') || "
+                + "setweight(to_tsvector('simple', COALESCE(metadata->>'searchTokens', '')), 'B')";
     }
 
     private String activeVersion() {
@@ -561,37 +718,52 @@ public class AgentKnowledgeService {
         return StrUtil.isBlank(value) ? "暂无" : value;
     }
 
+    /** 一轮严格或放宽检索的融合候选及去重后的分通道命中数。 */
+    private record RecallBundle(List<RagDocumentCandidate> fused, int vectorCount, int keywordCount) {
+    }
+
     /** RAG 上下文及多阶段召回元数据，供工作流追踪与 Recall@K 评测使用。 */
     public static final class RetrievalResult {
         private final String content;
         private final int hitCount;
         private final int vectorHitCount;
         private final int keywordHitCount;
+        private final String originalQuery;
         private final String rewrittenQuery;
         private final List<String> documentIds;
         private final boolean reranked;
+        private final String metadataFilter;
+        private final boolean filterRelaxed;
 
         public RetrievalResult(String content, int hitCount) {
-            this(content, hitCount, hitCount, 0, null, Collections.emptyList(), false);
+            this(content, hitCount, hitCount, 0, null, null,
+                    Collections.emptyList(), false, "", false);
         }
 
         public RetrievalResult(String content, int hitCount, int vectorHitCount, int keywordHitCount,
-                String rewrittenQuery, List<String> documentIds, boolean reranked) {
+                String originalQuery, String rewrittenQuery, List<String> documentIds, boolean reranked,
+                String metadataFilter, boolean filterRelaxed) {
             this.content = content;
             this.hitCount = hitCount;
             this.vectorHitCount = vectorHitCount;
             this.keywordHitCount = keywordHitCount;
+            this.originalQuery = originalQuery;
             this.rewrittenQuery = rewrittenQuery;
             this.documentIds = documentIds == null ? Collections.emptyList() : new ArrayList<>(documentIds);
             this.reranked = reranked;
+            this.metadataFilter = metadataFilter;
+            this.filterRelaxed = filterRelaxed;
         }
 
         public String getContent() { return content; }
         public int getHitCount() { return hitCount; }
         public int getVectorHitCount() { return vectorHitCount; }
         public int getKeywordHitCount() { return keywordHitCount; }
+        public String getOriginalQuery() { return originalQuery; }
         public String getRewrittenQuery() { return rewrittenQuery; }
         public List<String> getDocumentIds() { return new ArrayList<>(documentIds); }
         public boolean isReranked() { return reranked; }
+        public String getMetadataFilter() { return metadataFilter; }
+        public boolean isFilterRelaxed() { return filterRelaxed; }
     }
 }

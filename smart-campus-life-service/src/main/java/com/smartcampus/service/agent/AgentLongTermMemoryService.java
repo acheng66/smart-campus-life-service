@@ -1,65 +1,119 @@
 package com.smartcampus.service.agent;
 
+import java.time.LocalDateTime;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
 import jakarta.annotation.Resource;
 
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 
+import com.smartcampus.service.agent.memory.AgentMemoryRepository;
+import com.smartcampus.service.agent.memory.AgentPreferenceExtractor;
+import com.smartcampus.service.agent.memory.AgentPreferenceExtractor.ExtractionResult;
+import com.smartcampus.service.agent.memory.AgentPreferenceExtractor.PreferenceCandidate;
+import com.smartcampus.service.agent.memory.AgentUserMemory;
+
 import cn.hutool.core.util.StrUtil;
+import lombok.extern.slf4j.Slf4j;
 
 /**
- * 长期偏好记忆：仅保存用户明确表达的饮食偏好和预算，不从模型推断个人信息。
- * Redis Hash 保留 180 天；业务实时状态不进入长期记忆。
+ * 结构化长期记忆。
+ *
+ * <p>只接受用户原句中明确出现的忌口、食物偏好和预算，不让模型猜测用户画像；
+ * “今天/这次”等临时约束只留在会话记忆，不提升为跨会话偏好。PostgreSQL 是事实源，
+ * Redis Hash 是 180 天读取缓存。</p>
  */
+@Slf4j
 @Service
 public class AgentLongTermMemoryService {
     private static final String KEY_PREFIX = "agent:profile:";
-
     @Resource
     private StringRedisTemplate stringRedisTemplate;
+    @Resource
+    private AgentPreferenceExtractor preferenceExtractor;
+    @Autowired(required = false)
+    private AgentMemoryRepository memoryRepository;
 
-    /**
-     * 将当前用户已保存的偏好转换为 Prompt 文本。
-     * 这里只提供理解上下文的参考，不能替代实时库存、资格或权限判断。
-     */
+    /** 读取结构化偏好；数据库可用时缓存未命中会自动回填 Redis。 */
     public String profilePrompt(Long userId) {
-        Map<Object, Object> profile = stringRedisTemplate.opsForHash().entries(KEY_PREFIX + userId);
-        if (profile.isEmpty()) {
+        String key = KEY_PREFIX + userId;
+        Map<Object, Object> cached = stringRedisTemplate.opsForHash().entries(key);
+        if (!cached.isEmpty()) {
+            return readable(cached);
+        }
+        if (memoryRepository == null) {
             return "无";
         }
-        Map<String, Object> readable = new LinkedHashMap<>();
-        profile.forEach((key, value) -> readable.put(String.valueOf(key), value));
-        return readable.toString();
+        try {
+            List<AgentUserMemory> memories = memoryRepository.activeMemories(userId);
+            if (memories.isEmpty()) {
+                return "无";
+            }
+            Map<String, String> values = new LinkedHashMap<>();
+            for (AgentUserMemory memory : memories) {
+                values.put(memory.getCategory() + ":" + memory.getMemoryKey(), memory.getValue());
+            }
+            stringRedisTemplate.opsForHash().putAll(key, values);
+            stringRedisTemplate.expire(key, 180, TimeUnit.DAYS);
+            return values.toString();
+        } catch (Exception e) {
+            log.warn("读取 Agent 长期偏好失败，继续使用空偏好, userId={}", userId, e);
+            return "无";
+        }
+    }
+
+    public void captureExplicitPreference(Long userId, String message) {
+        captureExplicitPreference(userId, null, message);
     }
 
     /**
-     * 从用户明确表达的原句中提取少量偏好。
-     * 当前采用简单规则（不吃、喜欢、预算/人均），刻意不调用模型推断隐私信息。
+     * 将显式偏好先记录为候选审计，再激活为结构化记忆；冲突值按相同业务键覆盖。
+     * 用户说“忘掉/清除……”时支持删除对应类别或全部偏好。
      */
-    public void captureExplicitPreference(Long userId, String message) {
-        String text = message == null ? "" : message.trim();
-        String key = KEY_PREFIX + userId;
-        if (text.contains("不吃")) {
-            save(key, "忌口", StrUtil.subAfter(text, "不吃", false));
+    public void captureExplicitPreference(Long userId, String conversationId, String message) {
+        String text = StrUtil.trim(message);
+        if (StrUtil.isBlank(text)) {
+            return;
         }
-        if (text.contains("喜欢")) {
-            save(key, "偏好", StrUtil.subAfter(text, "喜欢", false));
+        ExtractionResult extraction = preferenceExtractor.extract(text);
+        if (extraction.forget()) {
+            forget(userId, extraction.forgetCategory());
+            return;
         }
-        if (text.matches(".*(预算|人均).*[0-9０-９]+.*")) {
-            save(key, "预算描述", text);
+        for (PreferenceCandidate candidate : extraction.candidates()) {
+            accept(userId, conversationId, text, candidate.category(), candidate.memoryKey(), candidate.value());
         }
     }
 
-    /** 保存单项偏好并刷新 180 天 TTL；每项最多保留 80 个字符。 */
-    private void save(String key, String field, String value) {
-        if (StrUtil.isBlank(value)) {
-            return;
+    private void accept(Long userId, String conversationId, String source, String category,
+            String memoryKey, String value) {
+        String safeValue = StrUtil.subWithLength(value, 0, 80);
+        if (memoryRepository != null) {
+            // 用户偏好保留 180 天；每次明确表达会刷新过期时间。
+            memoryRepository.acceptMemory(userId, conversationId, source, category, memoryKey,
+                    safeValue, "GLOBAL", LocalDateTime.now().plusDays(180));
         }
-        stringRedisTemplate.opsForHash().put(key, field, StrUtil.subWithLength(value.trim(), 0, 80));
+        String key = KEY_PREFIX + userId;
+        stringRedisTemplate.opsForHash().put(key, category + ":" + memoryKey, safeValue);
         stringRedisTemplate.expire(key, 180, TimeUnit.DAYS);
+    }
+
+    private void forget(Long userId, String category) {
+        if (memoryRepository != null) {
+            memoryRepository.deleteMemories(userId, category);
+        }
+        // 删除整个缓存，下一次读取会从 PostgreSQL 重建剩余的有效偏好。
+        stringRedisTemplate.delete(KEY_PREFIX + userId);
+    }
+
+    private String readable(Map<Object, Object> profile) {
+        Map<String, Object> values = new LinkedHashMap<>();
+        profile.forEach((key, value) -> values.put(String.valueOf(key), value));
+        return values.isEmpty() ? "无" : values.toString();
     }
 }
